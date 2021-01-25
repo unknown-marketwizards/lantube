@@ -8,7 +8,7 @@
 
 这是一个局域网的视频服务器，可以部署在局域网内的任何（有操作系统的）设备上（甚至是树莓派）
 
-* 个人电脑（Windows, Linux, Mac）
+* 电脑（Windows, Linux, Mac）
 * 手机平板
 * 树莓派
 
@@ -24,8 +24,7 @@
 * [Iris Web Framework](https://github.com/kataras/iris)
 
 ---
-![](images/screenshot1.zh.png)
-![](images/screenshot2.zh.png)
+![](images/screenshot.zh.gif)
 
 # 特性
 
@@ -51,7 +50,7 @@
 * 进入文件夹
 
   ```bash
-  cd lantube
+  cd lantube/frontend
   ```
 
 * 安装需要的库文件
