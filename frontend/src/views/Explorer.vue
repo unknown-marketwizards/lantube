@@ -40,7 +40,7 @@
                 <el-table-column sortable
                                  prop="name"
                                  :label="$t('explorer.name')">
-                    <template slot-scope="scope">
+                    <template #default="scope">
                         <i :class="scope.row.type === 'dir' ? 'el-icon-folder' : 'el-icon-document'"></i>
                         <span style="margin-left: 10px">{{ scope.row.name }}</span>
                     </template>
@@ -52,6 +52,7 @@
 
 <script>
 import API from '../api'
+import path_browserify from 'path-browserify'
 
 export default {
     data() {
@@ -66,10 +67,9 @@ export default {
     },
     computed: {
         currentPath() {
-            let path = require('path')
             let p = ''
             for (let i in this.filePath) {
-                p = path.join(p, this.filePath[i])
+                p = path_browserify.join(p, this.filePath[i])
             }
             return p
         },
@@ -85,7 +85,7 @@ export default {
                     cancelButtonText: this.$t('cancel'),
                 }).then(({value}) => {
                 let that = this
-                let path = require('path').join(this.currentPath, value)
+                let path = path_browserify.join(this.currentPath, value)
                 API.mkdir(path).then(function () {
                     that.reload('')
                     that.$message({
@@ -121,7 +121,7 @@ export default {
                     if (this.fileData[i].name === row.name) {
                         playIndex = index
                     }
-                    let path = require('path').join('file', this.currentPath, this.fileData[i].name)
+                    let path = path_browserify.join('file', this.currentPath, this.fileData[i].name)
                     playlist.push(path)
                     index++
                 }
@@ -132,7 +132,7 @@ export default {
         reload(name) {
             let that = this
             this.loading = true
-            let path = require('path').join(this.currentPath, name)
+            let path = path_browserify.join(this.currentPath, name)
 
             API.explorer(path).then(function (result) {
                 that.loading = false

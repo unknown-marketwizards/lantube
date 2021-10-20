@@ -1,4 +1,4 @@
-module.exports = {
+export default {
     confirm: 'Confirm',
     cancel: 'Cancel',
 

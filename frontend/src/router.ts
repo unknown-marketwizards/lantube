@@ -1,13 +1,13 @@
-import Vue from 'vue'
-import Router from 'vue-router'
+import {createRouter, createWebHistory} from 'vue-router'
 import Home from './views/Home.vue'
 import Explorer from './views/Explorer.vue'
 import Setting from './views/Setting.vue'
 import Videos from './views/Videos.vue'
 
-Vue.use(Router)
+const routerHistory = createWebHistory()
 
-export default new Router({
+const router = createRouter({
+    history: routerHistory,
     routes: [
         {
             path: '/',
@@ -18,7 +18,13 @@ export default new Router({
             menuShow: true,
             iconCls: 'el-icon-menu',
             children: [
-                {path: '/explorer', component: Explorer, name: 'router.explorer', title: 'router.explorer', menuShow: true}
+                {
+                    path: '/explorer',
+                    component: Explorer,
+                    name: 'router.explorer',
+                    title: 'router.explorer',
+                    menuShow: true
+                }
             ]
         },
         {
@@ -45,3 +51,5 @@ export default new Router({
         },
     ]
 })
+
+export default router

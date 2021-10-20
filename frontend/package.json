@@ -3,47 +3,25 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "serve": "vue-cli-service serve",
-    "build": "vue-cli-service build",
-    "lint": "vue-cli-service lint"
+    "serve": "vite preview",
+    "build": "vite build",
+    "dev": "vite"
   },
   "dependencies": {
-    "axios": "^0.21.1",
-    "core-js": "^3.6.5",
-    "element-ui": "^2.15.0",
-    "video.js": "^7.10.2",
+    "axios": "^0.22.0",
+    "element-plus": "^1.1.0-beta.24",
+    "path-browserify": "^1.0.1",
+    "video.js": "^7.16.0",
     "videojs-playlist": "^4.3.1",
     "videojs-playlist-ui": "^3.8.0",
-    "vue": "^2.6.11",
-    "vue-i18n": "^8.22.4",
-    "vue-router": "^3.4.9"
+    "vue": "^3.2.20",
+    "vue-i18n": "^9.2.0-beta.13",
+    "vue-router": "^4.0.12"
   },
   "devDependencies": {
-    "@vue/cli-plugin-babel": "~4.5.0",
-    "@vue/cli-plugin-eslint": "~4.5.0",
-    "@vue/cli-service": "~4.5.0",
-    "babel-eslint": "^10.1.0",
-    "eslint": "^6.7.2",
-    "eslint-plugin-vue": "^6.2.2",
-    "vue-template-compiler": "^2.6.11"
-  },
-  "eslintConfig": {
-    "root": true,
-    "env": {
-      "node": true
-    },
-    "extends": [
-      "plugin:vue/essential",
-      "eslint:recommended"
-    ],
-    "parserOptions": {
-      "parser": "babel-eslint"
-    },
-    "rules": {}
-  },
-  "browserslist": [
-    "> 1%",
-    "last 2 versions",
-    "not dead"
-  ]
+    "@vitejs/plugin-vue": "^1.9.2",
+    "typescript": "^4.4.3",
+    "vite": "^2.6.0",
+    "vue-tsc": "^0.3.0"
+  }
 }

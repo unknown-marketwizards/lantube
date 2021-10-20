@@ -82,7 +82,7 @@ export default {
             this.checkPause()
         }
     },
-    mounted() {
+    onMounted() {
         let playlist = this.$route.query.playlist
         const index = parseInt(this.$route.query.index)
 

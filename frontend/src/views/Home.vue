@@ -4,14 +4,12 @@
             <el-menu :default-active="defaultActiveIndex" router :collapse="true" @select="handleSelect">
                 <template v-for="(item,index) in $router.options.routes">
                     <el-submenu v-if="!item.leaf && item.menuShow" :index="index+''" :key="index+'0'">
-                        <template slot="title">
                             <i :class="item.iconCls"></i>
-                            <span slot="title">{{ $t(item.name) }}</span>
-                        </template>
+                            <template #title>{{ $t(item.name) }}</template>
                         <template v-for="term in item.children">
                             <el-menu-item v-if="term.menuShow" :key="term.path" :index="term.path"
                                           :class="$route.path===term.path?'is-active':''">
-                                <i :class="term.iconCls"></i><span slot="title">{{ $t(term.name) }}</span>
+                                <i :class="term.iconCls"></i><template #title>{{ $t(term.name) }}</template>
                             </el-menu-item>
                         </template>
                     </el-submenu>
@@ -19,7 +17,7 @@
                                   :index="item.children[0].path"
                                   :class="$route.path===item.children[0].path?'is-active':''" :key="index+'1'">
                         <i :class="item.iconCls"></i>
-                        <span slot="title">{{ $t(item.children[0].name) }}</span>
+                        <template #title>{{ $t(item.children[0].name) }}</template>
                     </el-menu-item>
                 </template>
             </el-menu>
