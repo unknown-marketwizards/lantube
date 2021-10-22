@@ -1,25 +1,26 @@
 <template>
-    <el-row>
-        <el-drawer
-            :title="$t('explorer.upload_title') + ' ' + currentPath"
-            :visible.sync="drawer"
-            direction="rtl">
-            <el-upload
-                class="upload-demo"
-                drag
-                action="/api/upload"
-                :data="{'path': currentPath}"
-                :on-success="onUpload"
-                multiple>
-                <i class="el-icon-upload"></i>
-                <div class="el-upload__text">{{
-                        $t('explorer.upload_text')
-                    }}<em>{{ $t('explorer.upload_text_em') }}</em></div>
-                <div class="el-upload__tip" slot="tip"></div>
-            </el-upload>
-        </el-drawer>
 
-        <el-row style="text-align: left;">
+    <el-drawer
+        :title="$t('explorer.upload_title') + ' ' + currentPath"
+        v-model="drawer"
+        direction="rtl">
+        <el-upload
+            class="upload-demo"
+            drag
+            action="/api/upload"
+            :data="{'path': currentPath}"
+            :on-success="onUpload"
+            multiple>
+            <i class="el-icon-upload"></i>
+            <div class="el-upload__text">{{
+                    $t('explorer.upload_text')
+                }}<em>{{ $t('explorer.upload_text_em') }}</em></div>
+            <div class="el-upload__tip" slot="tip"></div>
+        </el-upload>
+    </el-drawer>
+
+    <el-row style="text-align: left;">
+        <el-col>
             <el-breadcrumb separator-class="el-icon-arrow-right" style="margin-left: 10px">
                 <el-breadcrumb-item v-for="(item, i) in filePath" :key="item + i">
                     <el-button type="text" @click="onClickBreadcrumb(i)">{{
@@ -34,19 +35,19 @@
                     </el-button>
                 </el-breadcrumb>
             </el-breadcrumb>
-        </el-row>
-        <el-row>
-            <el-table :data="fileData" @row-click="onClick" v-loading="loading">
-                <el-table-column sortable
-                                 prop="name"
-                                 :label="$t('explorer.name')">
-                    <template #default="scope">
-                        <i :class="scope.row.type === 'dir' ? 'el-icon-folder' : 'el-icon-document'"></i>
-                        <span style="margin-left: 10px">{{ scope.row.name }}</span>
-                    </template>
-                </el-table-column>
-            </el-table>
-        </el-row>
+        </el-col>
+    </el-row>
+    <el-row>
+        <el-table :data="fileData" @row-click="onClick" v-loading="loading">
+            <el-table-column sortable
+                             prop="name"
+                             :label="$t('explorer.name')">
+                <template #default="scope">
+                    <i :class="scope.row.type === 'dir' ? 'el-icon-folder' : 'el-icon-document'"></i>
+                    <span style="margin-left: 10px">{{ scope.row.name }}</span>
+                </template>
+            </el-table-column>
+        </el-table>
     </el-row>
 </template>
 

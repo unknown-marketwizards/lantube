@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"github.com/alexflint/go-arg"
 	"github.com/kataras/iris/v12"
+	"github.com/kataras/iris/v12/middleware/logger"
+	"github.com/kataras/iris/v12/middleware/recover"
 	"io"
 	"io/ioutil"
 	"os"
@@ -36,13 +38,13 @@ func main() {
 
 	app := iris.New()
 
+	app.Use(recover.New())
+	app.Use(logger.New())
+
 	app.RegisterView(iris.HTML("./frontend/dist", ".html").Reload(true))
 	app.Favicon("./frontend/dist/favicon.ico")
 
-	app.HandleDir("js", "./frontend/dist/js")
-	app.HandleDir("css", "./frontend/dist/css")
-	app.HandleDir("fonts", "./frontend/dist/fonts")
-	app.HandleDir("lang", "./frontend/dist/lang")
+	app.HandleDir("assets", "./frontend/dist/assets")
 	app.HandleDir("file", DataDir)
 
 	app.Get("/", func(ctx iris.Context) {

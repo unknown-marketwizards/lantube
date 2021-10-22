@@ -3,17 +3,7 @@
         <el-aside width="80px">
             <el-menu :default-active="defaultActiveIndex" router :collapse="true" @select="handleSelect">
                 <template v-for="(item,index) in $router.options.routes">
-                    <el-submenu v-if="!item.leaf && item.menuShow" :index="index+''" :key="index+'0'">
-                            <i :class="item.iconCls"></i>
-                            <template #title>{{ $t(item.name) }}</template>
-                        <template v-for="term in item.children">
-                            <el-menu-item v-if="term.menuShow" :key="term.path" :index="term.path"
-                                          :class="$route.path===term.path?'is-active':''">
-                                <i :class="term.iconCls"></i><template #title>{{ $t(term.name) }}</template>
-                            </el-menu-item>
-                        </template>
-                    </el-submenu>
-                    <el-menu-item v-else-if="item.leaf && item.children && item.children.length"
+                    <el-menu-item v-if="item.leaf && item.children && item.children.length"
                                   :index="item.children[0].path"
                                   :class="$route.path===item.children[0].path?'is-active':''" :key="index+'1'">
                         <i :class="item.iconCls"></i>

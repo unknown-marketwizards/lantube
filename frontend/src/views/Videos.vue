@@ -1,21 +1,19 @@
 <template>
-    <el-row>
-        <div class="player-container">
-            <video ref="videoPlayer" class="video-js vjs-big-play-centered"></video>
-            <div class="vjs-playlist playlist-container">
-            </div>
+    <div class="player-container">
+        <video ref="videoPlayer" class="video-js vjs-big-play-centered"></video>
+        <div class="vjs-playlist playlist-container">
         </div>
-        <el-dialog :visible.sync="settingVisible">
-            <el-radio-group v-model="playMode" size="small" @change="modeChange">
-                <el-radio-button label="auto">{{ $t('videos.play_mode_auto') }}</el-radio-button>
-                <el-radio-button label="manual">{{ $t('videos.play_mode_manual') }}</el-radio-button>
-                <el-radio-button label="20">{{ $t('videos.play_mode_20m') }}</el-radio-button>
-                <el-radio-button label="30">{{ $t('videos.play_mode_30m') }}</el-radio-button>
-                <el-radio-button label="40">{{ $t('videos.play_mode_40m') }}</el-radio-button>
-                <el-radio-button label="60">{{ $t('videos.play_mode_60m') }}</el-radio-button>
-            </el-radio-group>
-        </el-dialog>
-    </el-row>
+    </div>
+    <el-dialog v-model="settingVisible">
+        <el-radio-group v-model="playMode" size="small" @change="modeChange">
+            <el-radio-button label="auto">{{ $t('videos.play_mode_auto') }}</el-radio-button>
+            <el-radio-button label="manual">{{ $t('videos.play_mode_manual') }}</el-radio-button>
+            <el-radio-button label="20">{{ $t('videos.play_mode_20m') }}</el-radio-button>
+            <el-radio-button label="30">{{ $t('videos.play_mode_30m') }}</el-radio-button>
+            <el-radio-button label="40">{{ $t('videos.play_mode_40m') }}</el-radio-button>
+            <el-radio-button label="60">{{ $t('videos.play_mode_60m') }}</el-radio-button>
+        </el-radio-group>
+    </el-dialog>
 </template>
 
 <script>
@@ -82,7 +80,7 @@ export default {
             this.checkPause()
         }
     },
-    onMounted() {
+    mounted() {
         let playlist = this.$route.query.playlist
         const index = parseInt(this.$route.query.index)
 
