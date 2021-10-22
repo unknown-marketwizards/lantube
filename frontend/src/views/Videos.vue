@@ -20,6 +20,7 @@
 import 'videojs-playlist'
 import 'videojs-playlist-ui'
 import 'videojs-playlist-ui/dist/videojs-playlist-ui.css'
+import videojs from "video.js";
 
 export default {
 
@@ -150,6 +151,13 @@ export default {
     },
     beforeUnmount() {
         if (this.player) {
+            let el = this.player.playlistMenu.el(); // Catch cases where the menu may have been disposed elsewhere or the
+            // element removed from the DOM.
+
+            if (el) {
+                this.player.playlistMenu.dispose();
+                videojs.dom.emptyEl(el); // Put the element back in its place.
+            }
             this.player.dispose()
         }
     }
