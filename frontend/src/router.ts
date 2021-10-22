@@ -1,10 +1,10 @@
-import {createRouter, createWebHistory} from 'vue-router'
+import {createRouter, createWebHashHistory} from 'vue-router'
 import Home from './views/Home.vue'
 import Explorer from './views/Explorer.vue'
 import Setting from './views/Setting.vue'
 import Videos from './views/Videos.vue'
 
-const routerHistory = createWebHistory()
+const routerHistory = createWebHashHistory()
 
 const router = createRouter({
     history: routerHistory,
