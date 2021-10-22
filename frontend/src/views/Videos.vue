@@ -30,6 +30,7 @@ export default {
                 language: this.$i18n.locale,
                 autoplay: true,
                 controls: true,
+                playbackRates: [0.5, 1, 1.5, 2, 3],
 
                 sources: []
             },
