@@ -20,20 +20,22 @@
     </el-container>
 </template>
 
-<script>
+<script lang="ts">
 
-export default {
+import {defineComponent} from "vue";
+
+export default defineComponent({
     data() {
         return {
             defaultActiveIndex: "0",
         };
     },
     methods: {
-        handleSelect(index) {
+        handleSelect(index: string) {
             this.defaultActiveIndex = index;
         },
     }
-}
+})
 </script>
 
 

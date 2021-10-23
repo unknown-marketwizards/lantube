@@ -16,17 +16,18 @@
     </el-dialog>
 </template>
 
-<script>
+<script lang="ts">
 import 'videojs-playlist'
 import 'videojs-playlist-ui'
 import 'videojs-playlist-ui/dist/videojs-playlist-ui.css'
 import videojs from "video.js";
+import {defineComponent} from "vue";
 
-export default {
+export default defineComponent({
 
-    data() {
+    data: function () {
         return {
-            player: null,
+            player: null as videojs.Player | null,
             options: {
                 language: this.$i18n.locale,
                 autoplay: true,
@@ -44,17 +45,19 @@ export default {
 
             settingVisible: false,
             playMode: 'auto',
-            timeStart: null
+            timeStart: null as Date | null
         }
     },
     methods: {
         checkPause() {
+            if (!this.player)
+                return
             if (!this.timeStart)
                 return
             if (this.playMode === 'auto' || this.playMode === 'manual')
                 return
 
-            let end = new Date()
+            let end: Date = new Date()
             const diff = (end - this.timeStart) / (1000 * 60)
             let n = parseInt(this.playMode)
             if (diff > n) {
@@ -90,7 +93,7 @@ export default {
             playlist = [playlist]
         }
 
-        let getFileName = function (path) {
+        let getFileName = function (path: string) {
             const pos1 = path.lastIndexOf('/');
             const pos2 = path.lastIndexOf('\\');
             const pos = Math.max(pos1, pos2);
@@ -100,7 +103,7 @@ export default {
                 return path.substring(pos + 1)
         }
 
-        let getExt = function (path) {
+        let getExt = function (path: string) {
             const index = path.lastIndexOf(".")
             return path.substr(index + 1).toLowerCase()
         }
@@ -119,6 +122,8 @@ export default {
 
         let that = this
         this.player = this.$video(this.$refs.videoPlayer, this.options, function onPlayerReady() {
+            if (!that.player)
+                return
 
             const customButton = that.$video.getComponent("Button")
             const pipButton = that.$video.extend(customButton, {
@@ -143,7 +148,7 @@ export default {
             that.player.playlist.currentItem(index)
 
             that.player.on("loadstart", function () {
-                if (that.playMode === 'manual') {
+                if (that.player && that.playMode === 'manual') {
                     that.player.pause()
                 }
             })
@@ -161,7 +166,7 @@ export default {
             this.player.dispose()
         }
     }
-}
+})
 </script>
 
 <style scoped>

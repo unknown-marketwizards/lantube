@@ -11,8 +11,10 @@
     </el-row>
 </template>
 
-<script>
-export default {
+<script lang="ts">
+import {defineComponent} from 'vue'
+
+export default defineComponent({
     methods: {
         onChange() {
             this.$i18n.locale = this.locale
@@ -30,7 +32,7 @@ export default {
             locale: this.$i18n.locale
         }
     }
-}
+})
 </script>
 
 <style scoped>

@@ -51,11 +51,12 @@
     </el-row>
 </template>
 
-<script>
+<script lang="ts">
 import API from '../api'
 import path_browserify from 'path-browserify'
+import {defineComponent} from "vue";
 
-export default {
+export default defineComponent({
     data() {
         return {
             fileData: [],
@@ -153,7 +154,7 @@ export default {
     mounted() {
         this.reload('')
     }
-}
+})
 </script>
 
 <style scoped>

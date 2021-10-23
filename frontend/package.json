@@ -1,5 +1,5 @@
 {
-  "name": "LanTube",
+  "name": "lantube",
   "version": "0.1.1",
   "private": true,
   "scripts": {
@@ -19,6 +19,7 @@
     "vue-router": "^4.0.12"
   },
   "devDependencies": {
+    "@types/video.js": "^7.3.27",
     "@vitejs/plugin-vue": "^1.9.2",
     "typescript": "^4.4.3",
     "vite": "^2.6.0",
