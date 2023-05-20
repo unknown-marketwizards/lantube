@@ -126,18 +126,19 @@ export default defineComponent({
                 return
 
             const customButton = that.$video.getComponent("Button")
-            const pipButton = that.$video.extend(customButton, {
-                constructor: function (player, options) {
-                    customButton.call(this, player, options);
+            class pipButton extends customButton {
+                constructor (player, options) {
+                    super(player, options);
                     this.controlText(that.$t('videos.setting'));
-                },
-                handleClick: () => {
+                }
+                handleClick() {
                     that.settingVisible = true
-                },
-                buildCSSClass: () => {
+                }
+                buildCSSClass() {
                     return "vjs-custom-control vjs-control vjs-button icon el-icon-setting";
                 }
-            })
+            }
+
             that.$video.registerComponent("settingButton", pipButton);
             that.player.getChild('controlBar').addChild('settingButton', {}, 1);
 
