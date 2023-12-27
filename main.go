@@ -15,7 +15,7 @@ import (
 
 var DataDir string
 
-var fileTypeList = []string{".mp4", ".mp3", ".m4a", ".webm", ".wmv", ".ts", ".rmvb", ".rm", ".avi", "flv"}
+var fileTypeList = []string{".mp4", ".mp3", ".m4a", ".webm", ".wmv", ".ts", ".rmvb", ".rm", ".avi", "flv", "ogg", "aac", "mp3", "wav", "flac", "mkv"}
 
 func main() {
 	if len(os.Args) == 1 {
