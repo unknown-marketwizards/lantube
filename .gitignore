@@ -1,5 +1,8 @@
 /.idea/
 /build/
+/data/
+/target/
+
 /main
 /yarn.lock
-/data/
+/Cargo.lock
