@@ -21,7 +21,6 @@
 * [Video.js](https://github.com/videojs/video.js)  
 * [Videojs-playlist](https://github.com/brightcove/videojs-playlist)
 * [Videojs-playlist-ui](https://github.com/brightcove/videojs-playlist-ui)
-* [Iris Web Framework](https://github.com/kataras/iris)
 
 ---
 ![](images/screenshot.zh.gif)
@@ -67,15 +66,9 @@
 
 ## 构建后台
 
-* 安装 [golang](https://golang.google.cn)
+* 安装 [rust](https://www.rust-lang.org)
 
-* 设置 GO_PATH 环境变量
-
-* 设置代理
-
-  ```bash
-  go env -w GOPROXY=https://goproxy.cn,direct
-  ```
+* 设置代理，参见[RsProxy](https://rsproxy.cn/#getStarted)
 
 * 进入文件夹
 
@@ -86,13 +79,13 @@
 * 构建
 
   ```bash
-  go build
+  cargo build --release
   ```
   
 * 运行
 
   ```bash
-  ./lantube --addr 0.0.0.0:9000 存放视频的目录
+  ./target/release/lantube --addr 0.0.0.0:9000 存放视频的目录
   ```
 ---
 如果您对股票，期货，外汇等金融交易感兴趣

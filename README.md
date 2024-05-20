@@ -25,7 +25,6 @@ It is built using the following open source project
 * [Video.js](https://github.com/videojs/video.js)
 * [Videojs-playlist](https://github.com/brightcove/videojs-playlist)
 * [Videojs-playlist-ui](https://github.com/brightcove/videojs-playlist-ui)
-* [Iris Web Framework](https://github.com/kataras/iris)
 
 ---
 ![](images/screenshot.gif)
@@ -71,9 +70,7 @@ It is built using the following open source project
 
 ## Build Server
 
-* Install [golang](https://golang.org)
-
-* Set GO_PATH Environment variable
+* Install [rust](https://www.rust-lang.org)
 
 * Enter folder
 
@@ -84,13 +81,13 @@ It is built using the following open source project
 * Build
 
   ```bash
-  go build
+  cargo build --release
   ```
 
 * Run
 
   ```bash
-  ./lantube --addr 0.0.0.0:9000 "Directory / for / storing / videos"
+  ./target/release/lantube --addr 0.0.0.0:9000 "Directory / for / storing / videos"
   ```
 ---
 如果您对股票，期货，外汇等金融交易感兴趣
