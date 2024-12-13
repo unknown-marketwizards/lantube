@@ -11,7 +11,7 @@
     "axios": "^1.7",
     "element-plus": "^1.1.0-beta.24",
     "path-browserify": "^1.0",
-    "video.js": "^8.3.0",
+    "video.js": "^8.21",
     "videojs-playlist": "^5.1.0",
     "videojs-playlist-ui": "^4.2.1",
     "vue": "^3.5",
