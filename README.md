@@ -84,11 +84,17 @@ It is built using the following open source project
   cargo build --release
   ```
 
-* Run
-
+## Run
+* Edit config file
   ```bash
-  ./target/release/lantube --addr 0.0.0.0:9000 "Directory / for / storing / videos"
+  cp config.example.toml config.toml
+  vim config.toml
   ```
+* Run
+  ```bash
+  ./target/release/lantube
+  ```
+
 ---
 如果您对股票，期货，外汇等金融交易感兴趣
 

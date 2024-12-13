@@ -81,12 +81,18 @@
   ```bash
   cargo build --release
   ```
-  
-* 运行
 
+## 运行
+* 编辑配置文件
   ```bash
-  ./target/release/lantube --addr 0.0.0.0:9000 存放视频的目录
+  cp config.example.toml config.toml
+  vim config.toml
   ```
+* 运行
+  ```bash
+  ./target/release/lantube
+  ```
+
 ---
 如果您对股票，期货，外汇等金融交易感兴趣
 
