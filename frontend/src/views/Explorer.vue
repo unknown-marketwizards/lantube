@@ -29,9 +29,10 @@
                     </el-button>
                 </el-breadcrumb-item>
                 <el-breadcrumb>
-                    <el-button @click="createDir" type="text" style="color: red"><i class="el-icon-folder-add"></i>
-                    </el-button>
-                    <el-button @click="drawer = true" type="text" style="color: red"><i class="el-icon-plus"></i>
+                    <el-button @click="createDir" v-if="currentPath!=='/'" type="text" style="color: red"><i
+                        class="el-icon-folder-add"></i></el-button>
+                    <el-button @click="drawer = true" v-if="currentPath!=='/'" type="text" style="color: red"><i
+                        class="el-icon-plus"></i>
                     </el-button>
                 </el-breadcrumb>
             </el-breadcrumb>

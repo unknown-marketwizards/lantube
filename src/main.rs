@@ -2,9 +2,9 @@ mod error;
 
 use crate::error::AppError;
 
+use anyhow::{anyhow, Result};
 use axum::extract::{DefaultBodyLimit, State};
 use axum::{extract::Multipart, routing::post, Json, Router};
-use clap::Parser;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tower_http::{
@@ -12,47 +12,51 @@ use tower_http::{
     trace::TraceLayer,
 };
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::str::FromStr;
 
-#[derive(Parser, Debug)]
-#[command(version, long_about = None)]
-struct Args {
-    data_dir: String,
-    /// listening address
-    #[arg(long)]
-    addr: Option<String>,
+#[derive(Deserialize)]
+struct ServerConfig {
+    addr: SocketAddr,
+}
+
+#[derive(Deserialize)]
+struct Config {
+    data: HashMap<String, PathBuf>,
+
+    server: ServerConfig,
 }
 
 #[derive(Default, Clone)]
 struct AppState {
-    data_dir: PathBuf,
+    data: HashMap<String, PathBuf>,
 }
 
 #[tokio::main]
 async fn main() {
-    let args = Args::parse();
+    let config_str = fs::read_to_string("config.toml").await.unwrap();
 
-    let addr = if let Some(addr) = args.addr {
-        SocketAddr::from_str(&addr).unwrap()
-    } else {
-        SocketAddr::from(([127, 0, 0, 1], 8888))
-    };
+    let config: Config = toml::from_str(&config_str).unwrap();
+
+    let addr = config.server.addr;
 
     let state = AppState {
-        data_dir: PathBuf::from(&args.data_dir),
+        data: config.data.clone(),
     };
 
-    let app = Router::new()
+    let mut router = Router::new()
         .nest_service("/", ServeFile::new("./frontend/dist/index.html"))
         .nest_service("/assets", ServeDir::new("./frontend/dist/assets"))
-        .nest_service("/file", ServeDir::new(args.data_dir))
         .route("/api/explorer", post(explorer))
         .route("/api/mkdir", post(mkdir))
-        .route("/api/upload", post(upload))
-        .layer(DefaultBodyLimit::disable())
-        .with_state(state);
+        .route("/api/upload", post(upload));
+
+    for (name, path) in config.data {
+        router = router.nest_service(format!("/file/{}", name).as_str(), ServeDir::new(path));
+    }
+
+    let app = router.layer(DefaultBodyLimit::disable()).with_state(state);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
 
@@ -73,43 +77,67 @@ struct PathParams {
     path: String,
 }
 
-fn get_path(data_dir: &PathBuf, path: String) -> PathBuf {
-    data_dir.join(if path.starts_with("/") {
-        &path[1..]
+fn get_path(data: &HashMap<String, PathBuf>, path_str: String) -> Result<PathBuf> {
+    let path = if path_str.starts_with("/") {
+        &path_str[1..]
     } else {
-        path.as_str()
-    })
+        path_str.as_str()
+    };
+
+    let parts: Vec<&str> = path.splitn(2, '/').collect();
+    if parts.len() == 0 {
+        return Err(anyhow!("Invalid path: {}", path_str));
+    }
+
+    let data_dir = data
+        .get(parts[0])
+        .ok_or(anyhow!("name {} not exist", parts[0]))?;
+
+    if parts.len() > 1 {
+        Ok(data_dir.join(parts[1]))
+    } else {
+        Ok(data_dir.clone())
+    }
 }
 
 async fn explorer(
     State(state): State<AppState>,
     Json(PathParams { path }): Json<PathParams>,
 ) -> Result<Json<Vec<ExplorerItem>>, AppError> {
-    let dir = get_path(&state.data_dir, path);
-
     let mut result = Vec::new();
 
-    let mut entries = fs::read_dir(dir).await?;
-    while let Some(entry) = entries.next_entry().await? {
-        let path = entry.path();
-        let file_name = if let Some(f) = path.file_name() {
-            f.to_string_lossy().into_owned()
-        } else {
-            continue;
-        };
-
-        if path.is_dir() {
+    if path == "/" {
+        for name in state.data.keys() {
             result.push(ExplorerItem {
-                name: file_name,
+                name: name.clone(),
                 type_: "dir".to_string(),
             });
-        } else {
-            if let Some(ext) = path.extension() {
-                if is_supported_file_type(ext) {
-                    result.push(ExplorerItem {
-                        name: file_name,
-                        type_: "file".to_string(),
-                    });
+        }
+    } else {
+        let dir = get_path(&state.data, path)?;
+
+        let mut entries = fs::read_dir(dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            let file_name = if let Some(f) = path.file_name() {
+                f.to_string_lossy().into_owned()
+            } else {
+                continue;
+            };
+
+            if path.is_dir() {
+                result.push(ExplorerItem {
+                    name: file_name,
+                    type_: "dir".to_string(),
+                });
+            } else {
+                if let Some(ext) = path.extension() {
+                    if is_supported_file_type(ext) {
+                        result.push(ExplorerItem {
+                            name: file_name,
+                            type_: "file".to_string(),
+                        });
+                    }
                 }
             }
         }
@@ -122,7 +150,7 @@ async fn mkdir(
     State(state): State<AppState>,
     Json(PathParams { path }): Json<PathParams>,
 ) -> Result<(), AppError> {
-    let dir = get_path(&state.data_dir, path);
+    let dir = get_path(&state.data, path)?;
 
     fs::create_dir(dir).await?;
 
@@ -148,8 +176,7 @@ async fn upload(State(state): State<AppState>, mut multipart: Multipart) -> Resu
                 }
                 "path" => {
                     let path_str = field.text().await?;
-
-                    target_path = Some(get_path(&state.data_dir, path_str.clone()));
+                    target_path = Some(get_path(&state.data, path_str.clone())?);
                 }
                 _ => {}
             }

@@ -1,0 +1,6 @@
+[data]
+marketwizard = "D:\\Users\\marketwizard\\Videos"
+administrator = "D:\\Users\\administrator\\Videos"
+
+[server]
+addr = "0.0.0.0:8888"

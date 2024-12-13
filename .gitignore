@@ -4,5 +4,8 @@
 /target/
 
 /Cargo.lock
-/main
-/yarn.lock
+/lantube
+/config.toml
+
+yarn.lock
+deno.lock
