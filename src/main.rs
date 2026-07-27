@@ -2,9 +2,9 @@ mod error;
 
 use crate::error::AppError;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use axum::extract::{DefaultBodyLimit, State};
-use axum::{extract::Multipart, routing::post, Json, Router};
+use axum::{Json, Router, extract::Multipart, routing::post};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tower_http::{
@@ -46,7 +46,7 @@ async fn main() {
     };
 
     let mut router = Router::new()
-        .nest_service("/", ServeFile::new("./frontend/dist/index.html"))
+        .fallback_service(ServeFile::new("./frontend/dist/index.html"))
         .nest_service("/assets", ServeDir::new("./frontend/dist/assets"))
         .route("/api/explorer", post(explorer))
         .route("/api/mkdir", post(mkdir))
