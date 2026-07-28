@@ -45,44 +45,28 @@ export default defineComponent({
 
             settingVisible: false,
             playMode: 'auto',
-            timeStart: null as Date | null
+            pauseTimer: null as number | null
         }
     },
     methods: {
-        checkPause() {
-            if (!this.player)
-                return
-            if (!this.timeStart)
-                return
-            if (this.playMode === 'auto' || this.playMode === 'manual')
-                return
-
-            let end: Date = new Date()
-            const diff = (end - this.timeStart) / (1000 * 60)
-            let n = parseInt(this.playMode)
-            if (diff > n) {
-                this.player.pause()
+        clearPauseTimer() {
+            if (this.player && this.pauseTimer !== null) {
+                this.player.clearTimeout(this.pauseTimer)
+                this.pauseTimer = null
             }
-            setTimeout(() => {
-                this.checkPause()
-            }, 10000)
         },
         modeChange() {
-            switch (this.playMode) {
-                case "auto":
-                    this.timeStart = null
-                    break
-                case "manual":
-                    this.timeStart = null
-                    break
-                case "20":
-                case "30":
-                case "40":
-                case "60":
-                    this.timeStart = new Date()
-                    break
+            this.clearPauseTimer()
+
+            const minutes = Number(this.playMode)
+            if (!this.player || !Number.isFinite(minutes)) {
+                return
             }
-            this.checkPause()
+
+            this.pauseTimer = this.player.setTimeout(() => {
+                this.player?.pause()
+                this.pauseTimer = null
+            }, minutes * 60 * 1000)
         }
     },
     mounted() {
@@ -157,6 +141,8 @@ export default defineComponent({
     },
     beforeUnmount() {
         if (this.player) {
+            this.clearPauseTimer()
+
             let el = this.player.playlistMenu.el(); // Catch cases where the menu may have been disposed elsewhere or the
             // element removed from the DOM.
 
