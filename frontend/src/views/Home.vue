@@ -2,7 +2,7 @@
 import {computed, onMounted, ref, watch} from 'vue'
 import {useRoute} from 'vue-router'
 import {useI18n} from 'vue-i18n'
-import {ArrowUp, ChevronRight, Film, House, LibraryBig, Menu, Settings, X} from '@lucide/vue'
+import {ArrowUp, ChevronRight, House, LibraryBig, Menu, Settings, X} from '@lucide/vue'
 import DirectoryBranch from '../components/DirectoryBranch.vue'
 import {directoryPath, folders, joinPath, libraryRoute, loadDirectory, parentPath} from '../library'
 
@@ -30,7 +30,7 @@ onMounted(() => void loadDirectory('/').catch(() => {}))
         <button v-if="drawer" type="button" class="drawer-shade" :aria-label="t('closeNavigation')" @click="drawer = false"></button>
         <aside class="sidebar" :class="{'drawer-open': drawer}" id="library-navigation">
             <RouterLink class="brand" :to="libraryRoute('/')" @click="drawer = false">
-                <span class="brand-mark"><Film :size="19" :stroke-width="2.4" /></span>
+                <img class="brand-mark" src="/lantube.svg" width="36" height="36" alt="">
                 <span>Lan<span class="brand-accent">Tube</span></span>
             </RouterLink>
 
@@ -114,14 +114,8 @@ onMounted(() => void loadDirectory('/').catch(() => {}))
     letter-spacing: -.9px;
 }
 .brand-mark {
-    display: grid;
-    place-items: center;
-    width: 36px;
-    height: 36px;
     border-radius: 10px;
-    background: var(--accent);
     box-shadow: 0 4px 18px #ff796b26;
-    color: #251416;
 }
 .brand-accent { color: var(--accent); }
 .nav { display: grid; gap: 4px; }
