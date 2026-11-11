@@ -26,29 +26,30 @@ function limitPreviews(limit: number) {
 }
 
 export async function getPreview(src: string, audio: boolean, signal: AbortSignal): Promise<Preview | undefined> {
-    const cached = cache.get(src)
+    const key = audio ? 'audio:' + src : src
+    const cached = cache.get(key)
     if (cached) {
-        cache.delete(src)
-        cache.set(src, cached)
+        cache.delete(key)
+        cache.set(key, cached)
         return cached
     }
 
     const local = await localSlot(async () => {
         if (signal.aborted) return
-        return cache.get(src) ?? capture(src, audio, signal)
+        return cache.get(key) ?? capture(src, audio, signal)
     })
     if (signal.aborted) return
-    const saved = cache.get(src)
+    const saved = cache.get(key)
     if (saved) return saved
 
     const server = !audio && !local?.image ? await serverSlot(async () => {
         if (signal.aborted) return
-        return cache.get(src) ?? serverPreview(src, local?.duration ?? 0, signal)
+        return cache.get(key) ?? serverPreview(src, local?.duration ?? 0, signal)
     }) : undefined
     const preview = server ?? local
     if (signal.aborted) return
     if (preview && (audio || preview.image || server)) {
-        cache.set(src, preview)
+        cache.set(key, preview)
         if (cache.size > 240) cache.delete(cache.keys().next().value!)
     }
     return preview

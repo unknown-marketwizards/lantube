@@ -17,6 +17,8 @@ export default {
     search: 'Search this folder',
     clearSearch: 'Clear search',
     noResults: 'No matching folders or files',
+    showOtherFiles: 'Show other files',
+    otherFiles: 'Other files',
     emptyFolder: 'This folder is empty',
     emptyFolderHelp: 'Upload media or create a subfolder to get started.',
     folders: 'Folders',

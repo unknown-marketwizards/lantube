@@ -1,6 +1,6 @@
 export interface ExplorerItem {
     name: string
-    type: 'dir' | 'file'
+    type: 'dir' | 'file' | 'other'
     size?: number
     modified?: number
 }
@@ -15,8 +15,8 @@ async function post(path: string, body: object): Promise<Response> {
     return response
 }
 
-export async function explore(path: string): Promise<ExplorerItem[]> {
-    return (await post('/api/explorer', {path})).json()
+export async function explore(path: string, includeOther: boolean): Promise<ExplorerItem[]> {
+    return (await post('/api/explorer', {path, includeOther})).json()
 }
 
 export async function createDirectory(path: string): Promise<void> {

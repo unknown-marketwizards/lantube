@@ -17,6 +17,8 @@ export default {
     search: '搜索当前目录',
     clearSearch: '清空搜索',
     noResults: '没有找到匹配的目录或文件',
+    showOtherFiles: '显示其他文件',
+    otherFiles: '其他文件',
     emptyFolder: '这个目录还是空的',
     emptyFolderHelp: '上传媒体文件，或创建一个子目录。',
     folders: '文件夹',

@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import {computed, onBeforeUnmount, onMounted, ref, watch} from 'vue'
-import {useRoute} from 'vue-router'
+import {useRoute, useRouter} from 'vue-router'
 import {useI18n} from 'vue-i18n'
 import {
-    ArrowRight, CircleAlert, Clapperboard, FolderClosed, FolderOpen, FolderPlus, Grid2X2,
+    ArrowRight, CircleAlert, Clapperboard, File, Files, FolderClosed, FolderOpen, FolderPlus, Grid2X2,
     HardDrive, List, LoaderCircle, Play, Search, Upload, X,
 } from '@lucide/vue'
 import {createDirectory, uploadFile} from '../api'
@@ -16,18 +16,22 @@ import {preferences} from '../preferences'
 
 const {t} = useI18n()
 const route = useRoute()
+const router = useRouter()
 const path = computed(() => directoryPath(route.query.dir))
 const atRoot = computed(() => path.value === '/')
+const showOther = computed(() => !atRoot.value && route.query.other === '1')
 const heading = computed(() => atRoot.value ? t('library') : pathName(path.value))
-const {items, pending, error, reload} = useDirectory(path)
+const {items, pending, error, reload} = useDirectory(path, showOther)
 
 const query = ref('')
 const searchInput = ref<HTMLInputElement>()
 const searchTerm = computed(() => query.value.trim().toLocaleLowerCase())
 const allFolders = computed(() => folders(path.value))
 const files = computed(() => orderedFiles(items.value))
+const otherFiles = computed(() => showOther.value ? orderedFiles(items.value, 'other') : [])
 const visibleFolders = computed(() => allFolders.value.filter((entry) => matches(entry.name)))
 const visibleFiles = computed(() => files.value.filter((entry) => matches(entry.name)))
+const visibleOtherFiles = computed(() => otherFiles.value.filter((entry) => matches(entry.name)))
 const firstFolder = computed(() => allFolders.value[0])
 const firstFile = computed(() => files.value[0])
 
@@ -72,7 +76,7 @@ async function makeFolder() {
     folderError.value = ''
     try {
         await createDirectory(joinPath(destination, name))
-        await loadDirectory(destination, true)
+        await loadDirectory(destination, {refresh: true})
         folderDialog.value?.close()
     } catch (cause) {
         folderError.value = (cause as Error).message
@@ -106,7 +110,7 @@ async function sendFiles(selected: File[]) {
         }
     }
     try {
-        await loadDirectory(destination, true)
+        await loadDirectory(destination, {refresh: true})
     } catch (cause) {
         if (destination === path.value) error.value = (cause as Error).message
     } finally {
@@ -181,6 +185,10 @@ function dropFiles(event: DragEvent) {
                 <kbd v-else aria-hidden="true">/</kbd>
             </label>
             <div v-if="!atRoot" class="toolbar-actions">
+                <button class="button" type="button" :aria-pressed="showOther" :disabled="pending"
+                    @click="router.replace(libraryRoute(path, !showOther))">
+                    <Files /><span>{{ t('showOtherFiles') }}</span>
+                </button>
                 <button class="button" type="button" :disabled="pending || !!error" @click="openFolderDialog">
                     <FolderPlus /><span>{{ t('newFolder') }}</span>
                 </button>
@@ -218,12 +226,12 @@ function dropFiles(event: DragEvent) {
         <div v-else-if="pending && !items.length" class="status-panel" role="status">
             <LoaderCircle class="spinner" :size="26" /><strong>{{ t('loading') }}</strong>
         </div>
-        <div v-else-if="!allFolders.length && !files.length" class="status-panel">
+        <div v-else-if="!allFolders.length && !files.length && !otherFiles.length" class="status-panel">
             <component :is="atRoot ? HardDrive : FolderOpen" :size="32" />
             <strong>{{ t(atRoot ? 'noSources' : 'emptyFolder') }}</strong>
             <p>{{ t(atRoot ? 'noSourcesHelp' : 'emptyFolderHelp') }}</p>
         </div>
-        <div v-else-if="!visibleFolders.length && !visibleFiles.length" class="status-panel">
+        <div v-else-if="!visibleFolders.length && !visibleFiles.length && !visibleOtherFiles.length" class="status-panel">
             <Search :size="28" /><strong>{{ t('noResults') }}</strong>
             <button class="button" type="button" @click="query = ''">{{ t('clearSearch') }}</button>
         </div>
@@ -277,6 +285,20 @@ function dropFiles(event: DragEvent) {
                             </span>
                         </div>
                         <ArrowRight class="row-arrow" :size="18" />
+                    </RouterLink>
+                </div>
+            </section>
+            <section v-if="visibleOtherFiles.length" class="library-section" aria-labelledby="other-files-heading">
+                <header class="section-heading">
+                    <h2 id="other-files-heading">{{ t('otherFiles') }}</h2>
+                    <span class="section-count">{{ visibleOtherFiles.length }}</span>
+                </header>
+                <div class="folder-grid">
+                    <RouterLink v-for="file in visibleOtherFiles" :key="file.name" class="folder-card"
+                        :to="playerRoute(path, file.name)" :title="file.name">
+                        <span class="folder-icon"><File :size="22" /></span>
+                        <span class="folder-copy"><strong>{{ file.name }}</strong></span>
+                        <ArrowRight class="folder-arrow" :size="18" />
                     </RouterLink>
                 </div>
             </section>
@@ -362,7 +384,8 @@ function dropFiles(event: DragEvent) {
 .search button { display: grid; place-items: center; padding: 3px; border: 0; border-radius: 4px; background: none; color: var(--muted); }
 .search button:hover { color: var(--text); background: var(--hover); }
 .search kbd { padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px; font-size: 11px; line-height: 1.2; }
-.toolbar-actions { display: flex; gap: 8px; }
+.toolbar-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.toolbar-actions button[aria-pressed=true] { background: var(--accent-soft); color: var(--accent); }
 
 .library-section { min-width: 0; }
 .section-heading { display: flex; align-items: center; gap: 11px; margin-bottom: 13px; min-height: 32px; }

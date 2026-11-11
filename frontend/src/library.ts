@@ -2,8 +2,8 @@ import {computed, reactive, ref, watch, type Ref} from 'vue'
 import {explore, type ExplorerItem} from './api'
 import {preferences} from './preferences'
 
-const directories = reactive(new Map<string, ExplorerItem[]>())
-const requests = new Map<string, Promise<ExplorerItem[]>>()
+const directories = reactive(new Map<string, {items: ExplorerItem[]; includeOther: boolean}>())
+const requests = new Map<string, {promise: Promise<ExplorerItem[]>; includeOther: boolean}>()
 const collator = new Intl.Collator(undefined, {numeric: true, sensitivity: 'base'})
 const audioExtensions = new Set(['aac', 'flac', 'm4a', 'mp3', 'opus', 'wav'])
 
@@ -40,8 +40,8 @@ export function pathName(path: string): string {
     return path.slice(path.lastIndexOf('/') + 1)
 }
 
-export function libraryRoute(path: string) {
-    return {name: 'library', query: path === '/' ? {} : {dir: path}}
+export function libraryRoute(path: string, other = false) {
+    return {name: 'library', query: path === '/' ? {} : {dir: path, other: other ? '1' : undefined}}
 }
 
 export function playerRoute(dir: string, file: string) {
@@ -49,7 +49,8 @@ export function playerRoute(dir: string, file: string) {
 }
 
 export function extension(name: string): string {
-    return name.slice(name.lastIndexOf('.') + 1).toLowerCase()
+    const dot = name.lastIndexOf('.')
+    return dot > name.lastIndexOf('/') + 1 ? name.slice(dot + 1).toLowerCase() : ''
 }
 
 export function isAudio(name: string): boolean {
@@ -61,13 +62,31 @@ export function title(name: string): string {
     return dot > 0 ? name.slice(0, dot) : name
 }
 
+function fileUrl(dir: string, name: string): string {
+    return '/file' + joinPath(dir, name).split('/').map(encodeURIComponent).join('/')
+}
+
 export function mediaUrl(dir: string, item: ExplorerItem): string {
-    const path = joinPath(dir, item.name).split('/').map(encodeURIComponent).join('/')
     const version = new URLSearchParams()
     if (item.modified !== undefined) version.set('v', String(item.modified))
     if (item.size !== undefined) version.set('size', String(item.size))
     const query = version.toString()
-    return '/file' + path + (query ? '?' + query : '')
+    return fileUrl(dir, item.name) + (query ? '?' + query : '')
+}
+
+export async function findUnlistedFile(dir: string, name: string, signal: AbortSignal): Promise<ExplorerItem | undefined> {
+    if (dir === '/' || !name || name === '.' || name === '..' || /[/\\\0]/.test(name)) return
+    const item: ExplorerItem = {name, type: 'other'}
+    if (!visible(item)) return
+
+    const response = await fetch(fileUrl(dir, name), {method: 'HEAD', cache: 'no-store', signal})
+    if (response.status === 404) return
+    if (!response.ok) throw new Error(String(response.status))
+    const size = response.headers.get('content-length')
+    const modified = Date.parse(response.headers.get('last-modified') ?? '')
+    if (size !== null) item.size = Number(size)
+    if (Number.isFinite(modified)) item.modified = modified
+    return item
 }
 
 export function conversionUrl(source: string, endpoint: 'transcode' | 'thumbnail'): string {
@@ -88,8 +107,8 @@ export function formatSize(size?: number): string {
         .format(value) + ' ' + units[unit]
 }
 
-export function orderedFiles(items: ExplorerItem[]): ExplorerItem[] {
-    return items.filter((item) => item.type === 'file' && visible(item)).sort((a, b) => {
+export function orderedFiles(items: ExplorerItem[], kind: 'file' | 'other' = 'file'): ExplorerItem[] {
+    return items.filter((item) => item.type === kind && visible(item)).sort((a, b) => {
         if (preferences.sort === 'recent') {
             return (b.modified ?? 0) - (a.modified ?? 0) || compareNames(a, b)
         }
@@ -101,37 +120,39 @@ export function orderedFiles(items: ExplorerItem[]): ExplorerItem[] {
 }
 
 export function folders(path: string): ExplorerItem[] {
-    return (directories.get(path) ?? []).filter((item) => item.type === 'dir' && (path === '/' || visible(item)))
+    return (directories.get(path)?.items ?? []).filter((item) => item.type === 'dir' && (path === '/' || visible(item)))
         .sort(compareNames)
 }
 
-export function loadDirectory(path: string, refresh = false): Promise<ExplorerItem[]> {
+export function loadDirectory(path: string, {refresh = false, includeOther}: {refresh?: boolean; includeOther?: boolean} = {}): Promise<ExplorerItem[]> {
     const pending = requests.get(path)
-    if (pending && !refresh) return pending
     const cached = directories.get(path)
-    if (cached && !refresh) return Promise.resolve(cached)
-    const request = explore(path).then((items) => {
-        if (requests.get(path) === request) directories.set(path, items)
+    // 刷新上传或新建后的目录时沿用该目录当前的显示范围。
+    includeOther ??= refresh && (pending?.includeOther ?? cached?.includeOther ?? false)
+    if (pending && !refresh && (!includeOther || pending.includeOther)) return pending.promise
+    if (cached && !refresh && (!includeOther || cached.includeOther)) return Promise.resolve(cached.items)
+    const promise = explore(path, includeOther).then((items) => {
+        if (requests.get(path)?.promise === promise) directories.set(path, {items, includeOther})
         return items
     }).finally(() => {
-        if (requests.get(path) === request) requests.delete(path)
+        if (requests.get(path)?.promise === promise) requests.delete(path)
     })
-    requests.set(path, request)
-    return request
+    requests.set(path, {promise, includeOther})
+    return promise
 }
 
-export function useDirectory(path: Readonly<Ref<string>>) {
-    const items = computed(() => directories.get(path.value) ?? [])
+export function useDirectory(path: Readonly<Ref<string>>, includeOther?: Readonly<Ref<boolean>>) {
+    const items = computed(() => directories.get(path.value)?.items ?? [])
     const pending = ref(false)
     const error = ref('')
     let attempt = 0
 
-    async function reload() {
+    async function load(refresh: boolean) {
         const id = ++attempt
         pending.value = true
         error.value = ''
         try {
-            await loadDirectory(path.value, true)
+            await loadDirectory(path.value, {refresh, includeOther: includeOther?.value ?? false})
         } catch (cause) {
             if (id === attempt) error.value = String((cause as Error).message || cause)
         } finally {
@@ -139,6 +160,8 @@ export function useDirectory(path: Readonly<Ref<string>>) {
         }
     }
 
-    watch(path, reload, {immediate: true})
-    return {items, pending, error, reload}
+    watch([path, () => includeOther?.value], ([directory, expanded], [previousDirectory]) => {
+        void load(directory !== previousDirectory || !!expanded)
+    }, {immediate: true})
+    return {items, pending, error, reload: () => load(true)}
 }

@@ -42,6 +42,14 @@ pub struct PathParams {
     path: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplorerParams {
+    path: String,
+    #[serde(default)]
+    include_other: bool,
+}
+
 pub fn is_normal_component(value: &str) -> bool {
     if value.is_empty() || value.contains(['/', '\\', '\0']) {
         return false;
@@ -137,7 +145,10 @@ pub async fn resolve_directory(
 
 pub async fn explorer(
     State(state): State<AppState>,
-    Json(PathParams { path }): Json<PathParams>,
+    Json(ExplorerParams {
+        path,
+        include_other,
+    }): Json<ExplorerParams>,
 ) -> Result<Json<Vec<ExplorerItem>>, AppError> {
     if path == "/" {
         return Ok(Json(
@@ -175,7 +186,8 @@ pub async fn explorer(
             result.push(ExplorerItem::directory(name));
             continue;
         }
-        if !entry_type.is_symlink() && !is_supported_file_type(Path::new(&name)) {
+        let known_media = is_media_extension(Path::new(&name));
+        if !entry_type.is_symlink() && !known_media && !include_other {
             continue;
         }
         let metadata = match fs::metadata(target).await {
@@ -185,7 +197,7 @@ pub async fn explorer(
         };
         if metadata.is_dir() {
             result.push(ExplorerItem::directory(name));
-        } else if metadata.is_file() && is_supported_file_type(Path::new(&name)) {
+        } else if metadata.is_file() && (known_media || include_other) {
             let modified = metadata
                 .modified()
                 .ok()
@@ -193,7 +205,7 @@ pub async fn explorer(
                 .and_then(|duration| u64::try_from(duration.as_millis()).ok());
             result.push(ExplorerItem {
                 name,
-                kind: "file",
+                kind: if known_media { "file" } else { "other" },
                 size: Some(metadata.len()),
                 modified,
             });
@@ -239,7 +251,7 @@ pub async fn resolve_file(
     Ok(file)
 }
 
-fn is_supported_file_type(path: &Path) -> bool {
+fn is_media_extension(path: &Path) -> bool {
     const EXTENSIONS: &[&str] = &[
         "mp4", "m4v", "mov", "mp3", "m4a", "webm", "wmv", "ts", "rmvb", "rm", "avi", "flv", "ogg",
         "ogv", "opus", "aac", "wav", "flac", "mkv",
@@ -292,6 +304,36 @@ mod tests {
         ] {
             assert!(!is_normal_component(name), "{name}");
         }
+    }
+
+    #[tokio::test]
+    async fn lists_unrecognized_files_only_on_request() {
+        let directory = tempfile::tempdir().unwrap();
+        for name in ["clip.MKV", "renamed.data", "extensionless"] {
+            fs::write(directory.path().join(name), []).await.unwrap();
+        }
+        let state = AppState {
+            data: HashMap::from([("media".to_string(), directory.path().to_owned())]),
+            ..Default::default()
+        };
+        let default = serde_json::from_str(r#"{"path":"/media"}"#).unwrap();
+        let Json(items) = explorer(State(state.clone()), Json(default)).await.unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            (items[0].name.as_str(), items[0].kind),
+            ("clip.MKV", "file")
+        );
+
+        let all = serde_json::from_str(r#"{"path":"/media","includeOther":true}"#).unwrap();
+        let Json(items) = explorer(State(state), Json(all)).await.unwrap();
+        let kinds: HashMap<_, _> = items
+            .into_iter()
+            .map(|item| (item.name, item.kind))
+            .collect();
+        assert_eq!(kinds.len(), 3);
+        assert_eq!(kinds["clip.MKV"], "file");
+        assert_eq!(kinds["renamed.data"], "other");
+        assert_eq!(kinds["extensionless"], "other");
     }
 
     #[tokio::test]

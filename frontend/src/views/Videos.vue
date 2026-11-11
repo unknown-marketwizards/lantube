@@ -7,10 +7,11 @@ import {
     ArrowLeft, CircleAlert, Clock3, Download, Film, ListVideo, LoaderCircle, Maximize, Minimize,
     Music2, Pause, PictureInPicture2, Play, Repeat2, SkipBack, SkipForward, Volume2, VolumeX,
 } from '@lucide/vue'
+import type {ExplorerItem} from '../api'
 import MediaCover from '../components/MediaCover.vue'
 import {
-    conversionUrl, directoryPath, extension, formatSize, isAudio, libraryRoute, mediaUrl, orderedFiles,
-    playerRoute, title, useDirectory,
+    conversionUrl, directoryPath, extension, findUnlistedFile, formatSize, isAudio, libraryRoute, mediaUrl,
+    orderedFiles, playerRoute, title, useDirectory,
 } from '../library'
 import {formatTime} from '../thumbnails'
 
@@ -18,18 +19,24 @@ const {t} = useI18n()
 const route = useRoute()
 const router = useRouter()
 const directory = computed(() => directoryPath(route.query.dir))
+const fileName = computed(() => typeof route.query.file === 'string' ? route.query.file : undefined)
 const {items, pending, error, reload} = useDirectory(directory)
-const playlist = computed(() => orderedFiles(items.value))
-const index = computed(() => typeof route.query.file === 'string'
-    ? playlist.value.findIndex((item) => item.name === route.query.file)
+const files = computed(() => orderedFiles(items.value))
+const unlisted = shallowRef<ExplorerItem>()
+const findingFile = ref(false)
+const findError = ref('')
+const lookupName = computed(() => pending.value || error.value
+    || files.value.some((item) => item.name === fileName.value) ? undefined : fileName.value)
+const playlist = computed(() => unlisted.value ? [unlisted.value] : files.value)
+const index = computed(() => fileName.value !== undefined
+    ? playlist.value.findIndex((item) => item.name === fileName.value)
     : 0)
 const current = computed(() => playlist.value[index.value])
+const backToLibrary = computed(() => libraryRoute(directory.value, current.value?.type === 'other'))
 const src = computed(() => current.value ? mediaUrl(directory.value, current.value) : '')
 const audio = computed(() => !!current.value && isAudio(current.value.name))
-const ogg = computed(() => !!current.value && extension(current.value.name) === 'ogg')
 const audioOnly = ref(false)
-const showAudio = computed(() => audio.value || audioOnly.value)
-const directHasNoPicture = ref(false)
+const directPicture = ref<boolean>()
 
 const stage = ref<HTMLElement>()
 const video = ref<HTMLVideoElement>()
@@ -39,10 +46,11 @@ type CompatibilityFailure = 'transcodeUnavailable' | 'transcodeFailed' | 'transc
 const failure = ref<CompatibilityFailure>()
 const directFailed = ref(false)
 const compatible = ref(false)
-const audioLayout = computed(() => showAudio.value || (ogg.value && !compatible.value && directHasNoPicture.value))
+const audioLayout = computed(() => !compatible.value && !directFailed.value && (directPicture.value === undefined ? audio.value : !directPicture.value))
 const playbackBlocked = computed(() => compatible.value ? !!failure.value : directFailed.value)
 const compatibilityProbe = shallowRef<AbortController>()
 const waitingForPicture = ref(false)
+const pictureAvailable = computed(() => compatible.value ? !waitingForPicture.value && !failure.value : directPicture.value === true)
 const preparing = computed(() => waitingForPicture.value || (directFailed.value && !!compatibilityProbe.value))
 let hls: Hls | undefined
 let playRequested = false
@@ -57,6 +65,24 @@ const fullscreen = ref(false)
 const playMode = ref<'automatic' | 'manual'>('automatic')
 const sleepMinutes = ref(0)
 let timer: number | undefined
+
+watch([directory, lookupName], async ([dir, name], _, onCleanup) => {
+    unlisted.value = undefined
+    findError.value = ''
+    findingFile.value = !!name
+    if (!name) return
+
+    const controller = new AbortController()
+    onCleanup(() => controller.abort())
+    try {
+        const item = await findUnlistedFile(dir, name, controller.signal)
+        if (!controller.signal.aborted) unlisted.value = item
+    } catch (cause) {
+        if (!controller.signal.aborted) findError.value = (cause as Error).message
+    } finally {
+        if (!controller.signal.aborted) findingFile.value = false
+    }
+}, {immediate: true})
 
 async function play() {
     playRequested = true
@@ -112,14 +138,14 @@ function compatibilityProbeFailed(media: HTMLVideoElement, status: number | unde
         audioOnly.value = true
         return
     }
-    // Ogg 可能只解出了音轨。自动探测失败时保留手动入口。
-    if (!requestedByUser && status === 503 && playable && ogg.value && !media.videoWidth) return
+    // 浏览器可能只解出了音轨。自动探测失败时保留手动入口。
+    if (!requestedByUser && status === 503 && playable && !media.videoWidth) return
     failure.value = transcodeError(status)
 }
 
 async function startCompatible(requestedByUser = false) {
     const media = video.value
-    if (!src.value || !media || compatible.value || compatibilityProbe.value || showAudio.value) return
+    if (!src.value || !media || compatible.value || compatibilityProbe.value || audioOnly.value) return
     const url = conversionUrl(src.value, 'transcode')
     let generation = playbackGeneration
     const probe = new AbortController()
@@ -243,7 +269,7 @@ function onMediaData() {
         return
     }
     directFailed.value = false
-    directHasNoPicture.value = !media.videoWidth
+    directPicture.value = media.videoWidth > 0
     if (!media.videoWidth && !attemptedCompatibility) void startCompatible()
 }
 
@@ -334,7 +360,7 @@ watch(src, async (source, _, onCleanup) => {
     playRequested = playMode.value === 'automatic'
     attemptedCompatibility = false
     audioOnly.value = false
-    directHasNoPicture.value = false
+    directPicture.value = undefined
     failure.value = undefined
     directFailed.value = false
     playing.value = false
@@ -373,23 +399,23 @@ const supportsPip = document.pictureInPictureEnabled
 
 <template>
     <section class="player-page">
-        <RouterLink :to="libraryRoute(directory)" class="back-link"><ArrowLeft :size="16" />{{ t('backToLibrary') }}</RouterLink>
-        <div v-if="error" class="status-panel" role="alert">
-            <CircleAlert :size="29" /><strong>{{ t('loadFailed') }}</strong><p>{{ error }}</p>
+        <RouterLink :to="backToLibrary" class="back-link"><ArrowLeft :size="16" />{{ t('backToLibrary') }}</RouterLink>
+        <div v-if="error || findError" class="status-panel" role="alert">
+            <CircleAlert :size="29" /><strong>{{ t('loadFailed') }}</strong><p>{{ error || findError }}</p>
             <button class="button" type="button" @click="reload">{{ t('retry') }}</button>
         </div>
-        <div v-else-if="pending && !current" class="status-panel" role="status">
+        <div v-else-if="(pending || findingFile) && !current" class="status-panel" role="status">
             <LoaderCircle :size="28" /><strong>{{ t('loading') }}</strong>
         </div>
         <div v-else-if="!current" class="status-panel">
             <Film :size="30" /><strong>{{ t('mediaMissing') }}</strong>
-            <RouterLink class="button" :to="libraryRoute(directory)">{{ t('backToLibrary') }}</RouterLink>
+            <RouterLink class="button" :to="backToLibrary">{{ t('backToLibrary') }}</RouterLink>
         </div>
         <template v-else>
             <header class="player-heading">
                 <h1 :title="current.name">{{ title(current.name) }}</h1>
                 <p>
-                    <span class="format">{{ extension(current.name).toUpperCase() }}</span>
+                    <span v-if="extension(current.name)" class="format">{{ extension(current.name).toUpperCase() }}</span>
                     <span v-if="current.size !== undefined">{{ formatSize(current.size) }}</span>
                 </p>
             </header>
@@ -452,7 +478,7 @@ const supportsPip = document.pictureInPictureEnabled
                     </div>
 
                     <div class="play-preferences">
-                        <button v-if="!showAudio" class="button quiet" type="button" :aria-pressed="compatible"
+                        <button v-if="!audioOnly" class="button quiet" type="button" :aria-pressed="compatible"
                             :disabled="!compatible && !!compatibilityProbe"
                             @click="compatible ? playOriginal() : startCompatible(true)">
                             <Film :size="17" />{{ t(compatible ? 'originalPlayback' : 'compatiblePlayback') }}
@@ -488,7 +514,10 @@ const supportsPip = document.pictureInPictureEnabled
                             <RouterLink class="queue-link" :class="{'current-item': position === index}" replace
                                 :aria-current="position === index ? 'true' : undefined"
                                 :to="playerRoute(directory, item.name)" :title="item.name">
-                                <MediaCover class="queue-cover" :src="mediaUrl(directory, item)" :audio="isAudio(item.name)" />
+                                <MediaCover v-if="item.type === 'file' || pictureAvailable"
+                                    class="queue-cover" :src="mediaUrl(directory, item)"
+                                    :audio="isAudio(item.name) && !(position === index && pictureAvailable)" />
+                                <span v-else class="queue-cover other-cover"><Film :size="18" aria-hidden="true" /></span>
                                 <div class="queue-copy">
                                     <strong>{{ title(item.name) }}</strong>
                                     <span v-if="position === index" class="now-playing">
@@ -561,6 +590,7 @@ const supportsPip = document.pictureInPictureEnabled
 .queue-link:hover { background: var(--hover); }
 .queue-link.current-item { border-color: #ff796b4d; background: var(--accent-soft); }
 .queue-cover { flex: 0 0 104px; border-radius: 6px; }
+.other-cover { display: grid; place-items: center; aspect-ratio: 16 / 9; background: var(--raised); color: var(--muted); }
 .queue-copy { display: grid; gap: 6px; min-width: 0; }
 .queue-copy strong { overflow: hidden; color: var(--text); font-size: 13px; font-weight: 630; text-overflow: ellipsis; white-space: nowrap; }
 .queue-copy span { color: var(--muted); font-size: 11px; }
