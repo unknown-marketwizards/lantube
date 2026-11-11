@@ -2,27 +2,24 @@
   "name": "lantube",
   "version": "0.1.2",
   "private": true,
+  "type": "module",
   "scripts": {
     "serve": "vite preview",
-    "build": "vite build",
+    "build": "npm run type-check && vite build",
+    "type-check": "vue-tsc --noEmit",
     "dev": "vite"
   },
   "dependencies": {
-    "axios": "^1.18.1",
-    "element-plus": "^2.14.3",
-    "path-browserify": "^1.0.1",
-    "video.js": "^8.23.9",
-    "videojs-playlist": "^5.2.0",
-    "videojs-playlist-ui": "^5.0.0",
-    "vue": "^3.5.40",
-    "vue-i18n": "^11.4.8",
-    "vue-router": "^5.2.0"
+    "@fontsource-variable/geist": "^5.3.0",
+    "@lucide/vue": "^1.71.0",
+    "vue": "^3.5.45",
+    "vue-i18n": "^11.4.18",
+    "vue-router": "^5.5.0"
   },
   "devDependencies": {
-    "@types/video.js": "^7.3.58",
-    "@vitejs/plugin-vue": "^6.0.8",
-    "typescript": "^7.0.2",
-    "vite": "^8.1.5",
-    "vue-tsc": "^3.3.8"
+    "@vitejs/plugin-vue": "^6.0.10",
+    "typescript": "~6.0.3",
+    "vite": "^8.3.8",
+    "vue-tsc": "^3.3.14"
   }
 }

@@ -1,15 +1,43 @@
-import axios from 'axios'
+export interface ExplorerItem {
+    name: string
+    type: 'dir' | 'file'
+    size?: number
+    modified?: number
+}
 
+async function post(path: string, body: object): Promise<Response> {
+    const response = await fetch(path, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body),
+    })
+    if (!response.ok) throw new Error(await response.text() || String(response.status))
+    return response
+}
 
-axios.defaults.withCredentials = true
+export async function explore(path: string): Promise<ExplorerItem[]> {
+    return (await post('/api/explorer', {path})).json()
+}
 
-export default {
-    explorer: (path) => {
-        let params = {'path': path}
-        return axios.post('api/explorer', params).then(res => res.data)
-    },
-    mkdir: (path) => {
-        let params = {'path': path}
-        return axios.post('api/mkdir', params).then(res => res.data)
-    },
+export async function createDirectory(path: string): Promise<void> {
+    await post('/api/mkdir', {path})
+}
+
+export function uploadFile(path: string, file: File, progress: (percent: number) => void): Promise<void> {
+    return new Promise((resolve, reject) => {
+        const form = new FormData()
+        form.append('path', path)
+        form.append('file', file)
+        const request = new XMLHttpRequest()
+        request.open('POST', '/api/upload')
+        request.upload.onprogress = (event) => {
+            if (event.lengthComputable) progress(Math.round(event.loaded / event.total * 100))
+        }
+        request.onload = () => {
+            if (request.status >= 200 && request.status < 300) resolve()
+            else reject(new Error(request.responseText || String(request.status)))
+        }
+        request.onerror = () => reject(new Error('Network error'))
+        request.send(form)
+    })
 }

@@ -14,23 +14,12 @@
 
 ---
 
-它使用下面开源项目构建
-
-* [Vue.js](https://vuejs.org)
-* [Element](https://element.eleme.cn) 
-* [Video.js](https://github.com/videojs/video.js)  
-* [Videojs-playlist](https://github.com/brightcove/videojs-playlist)
-* [Videojs-playlist-ui](https://github.com/brightcove/videojs-playlist-ui)
-
----
-![](images/screenshot.zh.gif)
-
 # 特性
 
-* 任意局域网设备都可以部署
-* 自动播放
-* 定时播放
-* 多语言支持
+* 使用目录树、面包屑和当前目录搜索浏览共享目录。
+* 媒体库和播放队列显示视频帧缩略图。播放和缩略图取决于浏览器支持的媒体编码。
+* 上传文件、新建目录，支持简体中文和英文。
+* 支持自动连播、逐个手动播放和定时暂停。
 
 # 如何构建
 
@@ -55,13 +44,13 @@
 * 安装需要的库文件
 
   ```bash
-  yarn install
+  npm install
   ```
 
 * 构建
 
   ```bash
-  yarn build
+  npm run build
   ```
 
 ## 构建后台

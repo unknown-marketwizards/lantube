@@ -18,23 +18,12 @@ This is a LAN video server, which can be deployed on any device (with operating 
 
 ---
 
-It is built using the following open source project
-
-* [Vue.js](https://vuejs.org)
-* [Element](https://element.eleme.cn)
-* [Video.js](https://github.com/videojs/video.js)
-* [Videojs-playlist](https://github.com/brightcove/videojs-playlist)
-* [Videojs-playlist-ui](https://github.com/brightcove/videojs-playlist-ui)
-
----
-![](images/screenshot.gif)
-
 # Features
 
-* Any LAN device can be deployed
-* PlayList
-* Timed play
-* Multi-language support
+* Navigate shared folders with a directory tree, breadcrumbs and search within the current folder.
+* Browse video frames in the library and the play queue. Playback and thumbnails use the codecs supported by your browser.
+* Upload files, create folders and switch between English and Simplified Chinese.
+* Play the queue automatically or manually, with a sleep timer.
 
 # How to build
 
@@ -59,13 +48,13 @@ It is built using the following open source project
 * Install the required library files
 
   ```bash
-  yarn install
+  npm install
   ```
 
 * Build
 
   ```bash
-  yarn build
+  npm run build
   ```
 
 ## Build Server
