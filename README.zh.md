@@ -35,6 +35,8 @@ Cargo 会安装锁定的前端依赖、构建界面并嵌入 `target/release/lan
 
 ## 运行
 
+运行 Windows 版 LanTube 需要 Windows 10 或更新版本，Windows Server 则需要 Windows Server 2016 或更新版本。
+
 运行 `lantube`（Windows 下为 `lantube.exe`），然后打开 [http://127.0.0.1:8888](http://127.0.0.1:8888)。默认只监听本机，并使用可执行文件旁已有的 `share` 目录。创建该目录后重启 LanTube，即可浏览其中的媒体。
 
 如果要让可信局域网里的其他设备访问，或指定其他媒体目录，可以参照 [config.example.toml](config.example.toml) 创建 `config.toml`。LanTube 优先读取当前工作目录的配置，其次查找可执行文件旁的配置。媒体的相对路径以配置文件所在目录为基准。示例配置监听 `0.0.0.0:8888`。
