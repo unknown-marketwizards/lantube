@@ -13,7 +13,7 @@ export default {
     loading: 'Loading folder…',
     loadFailed: 'Unable to open this folder',
     noSources: 'No shared folders yet',
-    noSourcesHelp: 'Add a media directory in config.toml on the server and restart LanTube.',
+    noSourcesHelp: 'Create a share folder next to LanTube or set a media directory in config.toml, then restart LanTube.',
     search: 'Search this folder',
     clearSearch: 'Clear search',
     noResults: 'No matching folders or files',

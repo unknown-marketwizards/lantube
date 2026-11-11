@@ -21,66 +21,23 @@
 * 上传文件、新建目录，支持简体中文和英文。
 * 支持自动连播、逐个手动播放和定时暂停。
 
-# 如何构建
+![LanTube 界面演示，展示目录切换、视频缩略图、播放队列和定时暂停](images/screenshot.zh.gif)
 
-## 构建前端
+# 构建
 
-* 安装 [Node.js](https://nodejs.org)
+安装当前稳定版 Rust 工具链、目标平台的链接器，以及带 npm 的 Node.js 24.11 或更新版本。然后在仓库根目录执行以下命令。 [Rust](https://www.rust-lang.org/) · [Node.js](https://nodejs.org/)
 
-* 打开 终端 / PowerShell / Cmd
+```sh
+cargo build --release
+```
 
-* Clone 本仓库
-
-  ```bash
-  git clone https://github.com/unknown-marketwizards/lantube.git
-  ```
-
-* 进入文件夹
-
-  ```bash
-  cd lantube/frontend
-  ```
-
-* 安装需要的库文件
-
-  ```bash
-  npm install
-  ```
-
-* 构建
-
-  ```bash
-  npm run build
-  ```
-
-## 构建后台
-
-* 安装 [rust](https://www.rust-lang.org)
-
-* 设置代理，参见[RsProxy](https://rsproxy.cn/#getStarted)
-
-* 进入文件夹
-
-  ```bash
-  cd lantube
-  ```
-  
-* 构建
-
-  ```bash
-  cargo build --release
-  ```
+Cargo 会安装锁定的前端依赖、构建界面并嵌入 `target/release/lantube`（Windows 下为 `target/release/lantube.exe`）。分发时只需把这个可执行文件复制到操作系统和架构兼容的机器。Node.js、npm 和前端文件只在从源码构建时需要。
 
 ## 运行
-* 编辑配置文件
-  ```bash
-  cp config.example.toml config.toml
-  vim config.toml
-  ```
-* 运行
-  ```bash
-  ./target/release/lantube
-  ```
+
+运行 `lantube`（Windows 下为 `lantube.exe`），然后打开 [http://127.0.0.1:8888](http://127.0.0.1:8888)。默认只监听本机，并使用可执行文件旁已有的 `share` 目录。创建该目录后重启 LanTube，即可浏览其中的媒体。
+
+如果要让可信局域网里的其他设备访问，或指定其他媒体目录，可以参照 [config.example.toml](config.example.toml) 创建 `config.toml`。LanTube 优先读取当前工作目录的配置，其次查找可执行文件旁的配置。媒体的相对路径以配置文件所在目录为基准。示例配置监听 `0.0.0.0:8888`.
 
 ---
 如果您对股票，期货，外汇等金融交易感兴趣

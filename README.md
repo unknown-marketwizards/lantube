@@ -25,64 +25,23 @@ This is a LAN video server, which can be deployed on any device (with operating 
 * Upload files, create folders and switch between English and Simplified Chinese.
 * Play the queue automatically or manually, with a sleep timer.
 
-# How to build
+![LanTube demo showing folder navigation, video thumbnails, the play queue, and the sleep timer](images/screenshot.gif)
 
-## Build frontend
+# Build
 
-* Install [Node.js](https://nodejs.org)
+Install a current stable Rust toolchain, a linker for your target platform, and Node.js 24.11 or newer with npm. Run this command from the repository root. [Rust](https://www.rust-lang.org/) · [Node.js](https://nodejs.org/)
 
-* Open Terminal / PowerShell / cmd
+```sh
+cargo build --release
+```
 
-* Clone this repo
-
-  ```bash
-  git clone https://github.com/unknown-marketwizards/lantube.git
-  ```
-
-* Enter folder
-
-  ```bash
-  cd lantube/frontend
-  ```
-
-* Install the required library files
-
-  ```bash
-  npm install
-  ```
-
-* Build
-
-  ```bash
-  npm run build
-  ```
-
-## Build Server
-
-* Install [rust](https://www.rust-lang.org)
-
-* Enter folder
-
-  ```bash
-  cd lantube
-  ```
-
-* Build
-
-  ```bash
-  cargo build --release
-  ```
+Cargo installs the locked frontend dependencies, builds the UI and embeds it in `target/release/lantube` (`target/release/lantube.exe` on Windows). Copy that executable to a machine with a compatible OS and architecture. Node.js, npm and the frontend files are only needed when building from source.
 
 ## Run
-* Edit config file
-  ```bash
-  cp config.example.toml config.toml
-  vim config.toml
-  ```
-* Run
-  ```bash
-  ./target/release/lantube
-  ```
+
+Start `lantube` (or `lantube.exe`) and open [http://127.0.0.1:8888](http://127.0.0.1:8888). With the default settings, LanTube listens on localhost and uses a `share` directory next to the executable if one exists. Create the directory and restart LanTube to use it.
+
+To enable access from other devices on a trusted LAN or choose other media directories, use [config.example.toml](config.example.toml) as a template for `config.toml`. LanTube looks in the current working directory first, then beside the executable. Relative media paths are resolved from the configuration file's directory. The example listens on `0.0.0.0:8888`.
 
 ---
 如果您对股票，期货，外汇等金融交易感兴趣

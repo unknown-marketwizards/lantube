@@ -13,7 +13,7 @@ export default {
     loading: '正在读取目录…',
     loadFailed: '无法读取目录',
     noSources: '还没有共享目录',
-    noSourcesHelp: '在服务端的 config.toml 中添加媒体目录，然后重启 LanTube。',
+    noSourcesHelp: '在 LanTube 可执行文件旁创建 share 文件夹，或在 config.toml 中指定媒体目录，然后重启 LanTube。',
     search: '搜索当前目录',
     clearSearch: '清空搜索',
     noResults: '没有找到匹配的目录或文件',
