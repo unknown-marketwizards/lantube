@@ -9,18 +9,19 @@ pub struct AppError {
 }
 
 impl AppError {
-    pub fn bad_request(message: impl Into<String>) -> Self {
+    pub fn new(status: StatusCode, message: impl Into<String>) -> Self {
         Self {
-            status: StatusCode::BAD_REQUEST,
+            status,
             message: message.into(),
         }
     }
 
+    pub fn bad_request(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::BAD_REQUEST, message)
+    }
+
     pub fn forbidden(message: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::FORBIDDEN,
-            message: message.into(),
-        }
+        Self::new(StatusCode::FORBIDDEN, message)
     }
 }
 

@@ -105,16 +105,22 @@ pub async fn upload(
         return Err(AppError::bad_request("Missing file field"));
     }
 
-    // 表单校验结束后再逐个原子替换目标文件。
-    tokio::task::spawn_blocking(move || {
+    // 表单校验结束后由独立任务提交整批文件，客户端断开也不丢弃余下文件。
+    tokio::spawn(async move {
         for StagedUpload { target, temporary } in staged {
-            temporary.persist(target).map_err(|error| error.error)?;
+            state
+                .media
+                .replace(&target, move |destination| {
+                    temporary
+                        .persist(destination)
+                        .map_err(|error| error.error)?;
+                    Ok(())
+                })
+                .await?;
         }
-        Ok::<_, std::io::Error>(())
+        Ok(())
     })
-    .await
-    .map_err(AppError::from)??;
-    Ok(())
+    .await?
 }
 
 #[cfg(test)]
@@ -142,6 +148,7 @@ mod tests {
     fn state(root: &Path) -> State<AppState> {
         State(AppState {
             data: HashMap::from([("media".to_string(), root.to_owned())]),
+            ..Default::default()
         })
     }
 

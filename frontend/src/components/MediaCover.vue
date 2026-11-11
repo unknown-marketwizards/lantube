@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import {onBeforeUnmount, onMounted, ref, watch} from 'vue'
+import {computed, onBeforeUnmount, onMounted, ref, watch} from 'vue'
 import {Film, Music2} from '@lucide/vue'
+import {extension} from '../library'
 import {formatTime, getPreview} from '../thumbnails'
 
 const props = defineProps<{src: string; audio: boolean}>()
@@ -8,6 +9,7 @@ const cover = ref<HTMLElement>()
 const visible = ref(false)
 const image = ref<string>()
 const duration = ref(0)
+const audioCover = computed(() => !image.value && (props.audio || extension(props.src.split('?')[0]) === 'ogg'))
 let observer: IntersectionObserver | undefined
 
 onMounted(() => {
@@ -40,9 +42,9 @@ onBeforeUnmount(() => observer?.disconnect())
 </script>
 
 <template>
-    <span ref="cover" class="media-cover" :class="{'audio-cover': audio}">
+    <span ref="cover" class="media-cover" :class="{'audio-cover': audioCover}">
         <img v-if="image" :src="image" alt="" draggable="false">
-        <component :is="audio ? Music2 : Film" v-else class="cover-icon" aria-hidden="true" />
+        <component :is="audioCover ? Music2 : Film" v-else class="cover-icon" aria-hidden="true" />
         <span v-if="duration > 0 && Number.isFinite(duration)" class="cover-time">{{ formatTime(duration) }}</span>
     </span>
 </template>

@@ -1,14 +1,15 @@
 <script setup lang="ts">
-import {computed, nextTick, onBeforeUnmount, onMounted, ref, watch} from 'vue'
+import {computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch} from 'vue'
 import {useRoute, useRouter} from 'vue-router'
 import {useI18n} from 'vue-i18n'
+import type Hls from 'hls.js'
 import {
     ArrowLeft, CircleAlert, Clock3, Download, Film, ListVideo, LoaderCircle, Maximize, Minimize,
     Music2, Pause, PictureInPicture2, Play, Repeat2, SkipBack, SkipForward, Volume2, VolumeX,
 } from '@lucide/vue'
 import MediaCover from '../components/MediaCover.vue'
 import {
-    directoryPath, extension, formatSize, isAudio, libraryRoute, mediaUrl, orderedFiles,
+    conversionUrl, directoryPath, extension, formatSize, isAudio, libraryRoute, mediaUrl, orderedFiles,
     playerRoute, title, useDirectory,
 } from '../library'
 import {formatTime} from '../thumbnails'
@@ -25,12 +26,28 @@ const index = computed(() => typeof route.query.file === 'string'
 const current = computed(() => playlist.value[index.value])
 const src = computed(() => current.value ? mediaUrl(directory.value, current.value) : '')
 const audio = computed(() => !!current.value && isAudio(current.value.name))
+const ogg = computed(() => !!current.value && extension(current.value.name) === 'ogg')
+const audioOnly = ref(false)
+const showAudio = computed(() => audio.value || audioOnly.value)
+const directHasNoPicture = ref(false)
 
 const stage = ref<HTMLElement>()
 const video = ref<HTMLVideoElement>()
 const queue = ref<HTMLElement>()
 const playing = ref(false)
-const failed = ref(false)
+type CompatibilityFailure = 'transcodeUnavailable' | 'transcodeFailed' | 'transcodeUnsupported' | 'sourceChanged'
+const failure = ref<CompatibilityFailure>()
+const directFailed = ref(false)
+const compatible = ref(false)
+const audioLayout = computed(() => showAudio.value || (ogg.value && !compatible.value && directHasNoPicture.value))
+const playbackBlocked = computed(() => compatible.value ? !!failure.value : directFailed.value)
+const compatibilityProbe = shallowRef<AbortController>()
+const waitingForPicture = ref(false)
+const preparing = computed(() => waitingForPicture.value || (directFailed.value && !!compatibilityProbe.value))
+let hls: Hls | undefined
+let playRequested = false
+let attemptedCompatibility = false
+let playbackGeneration = 0
 const duration = ref(0)
 const time = ref(0)
 const volume = ref(1)
@@ -42,17 +59,197 @@ const sleepMinutes = ref(0)
 let timer: number | undefined
 
 async function play() {
+    playRequested = true
+    const generation = playbackGeneration
     try {
         await video.value?.play()
     } catch (cause) {
+        if (generation !== playbackGeneration) return
         if (cause instanceof DOMException && ['NotAllowedError', 'AbortError'].includes(cause.name)) return
-        failed.value = true
+        onMediaError()
     }
+}
+
+function pause() {
+    playRequested = false
+    video.value?.pause()
+}
+
+function stopCompatible() {
+    playbackGeneration++
+    compatibilityProbe.value?.abort()
+    compatibilityProbe.value = undefined
+    hls?.destroy()
+    hls = undefined
+    compatible.value = false
+    waitingForPicture.value = false
+}
+
+async function playOriginal() {
+    const position = video.value?.currentTime ?? 0
+    stopCompatible()
+    playRequested = true
+    const generation = playbackGeneration
+    failure.value = undefined
+    directFailed.value = false
+    await nextTick()
+    const media = video.value
+    if (generation !== playbackGeneration || !media) return
+    media.currentTime = position
+    setSpeed()
+    if (playRequested) void play()
+}
+
+function compatibilityFailed(reason: CompatibilityFailure) {
+    waitingForPicture.value = false
+    failure.value = reason
+    pause()
+}
+
+function compatibilityProbeFailed(media: HTMLVideoElement, status: number | undefined, requestedByUser: boolean) {
+    const playable = !media.error && media.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+    if (status === 422) {
+        audioOnly.value = true
+        return
+    }
+    // Ogg 可能只解出了音轨。自动探测失败时保留手动入口。
+    if (!requestedByUser && status === 503 && playable && ogg.value && !media.videoWidth) return
+    failure.value = transcodeError(status)
+}
+
+async function startCompatible(requestedByUser = false) {
+    const media = video.value
+    if (!src.value || !media || compatible.value || compatibilityProbe.value || showAudio.value) return
+    const url = conversionUrl(src.value, 'transcode')
+    let generation = playbackGeneration
+    const probe = new AbortController()
+    compatibilityProbe.value = probe
+    if (requestedByUser) playRequested = true
+    attemptedCompatibility = true
+    failure.value = undefined
+
+    try {
+        const {default: HlsPlayer} = await import('hls.js/light')
+        if (generation !== playbackGeneration) return
+        const useHls = HlsPlayer.isSupported()
+        if (!useHls && !media.canPlayType('application/vnd.apple.mpegurl')) {
+            failure.value = 'transcodeUnsupported'
+            return
+        }
+
+        let trackDuration = 0
+        if (useHls) {
+            // 每次加载都可能启动转码，失败后由用户决定是否再试。
+            const conversionLoadPolicy = {
+                default: {
+                    maxTimeToFirstByteMs: 50_000,
+                    maxLoadTimeMs: 50_000,
+                    timeoutRetry: null,
+                    errorRetry: null,
+                },
+            }
+            const player = new HlsPlayer({
+                autoStartLoad: false,
+                maxBufferLength: 12,
+                backBufferLength: 16,
+                manifestLoadPolicy: conversionLoadPolicy,
+                fragLoadPolicy: conversionLoadPolicy,
+            })
+            hls = player
+            // 先加载播放器自己的清单，成功后才替换原片。
+            const duration = await new Promise<number | undefined>((resolve) => {
+                probe.signal.addEventListener('abort', () => resolve(undefined), {once: true})
+                player.once(HlsPlayer.Events.MANIFEST_PARSED, (_, {levels, firstLevel}) => {
+                    resolve(levels[firstLevel]?.details?.totalduration ?? 0)
+                })
+                player.on(HlsPlayer.Events.ERROR, (_, details) => {
+                    if (generation !== playbackGeneration || !details.fatal) return
+                    const status = details.response?.code
+                    if (compatible.value) compatibilityFailed(transcodeError(status))
+                    else {
+                        compatibilityProbeFailed(media, status, requestedByUser)
+                        resolve(undefined)
+                    }
+                })
+                player.loadSource(url)
+            })
+            if (duration === undefined) return
+            trackDuration = duration
+        } else {
+            const response = await fetch(url, {method: 'HEAD', signal: probe.signal})
+            if (generation !== playbackGeneration) return
+            if (!response.ok) {
+                compatibilityProbeFailed(media, response.status, requestedByUser)
+                return
+            }
+        }
+        if (generation !== playbackGeneration || failure.value || audioOnly.value) return
+        const position = media.currentTime
+        generation = ++playbackGeneration
+        directFailed.value = false
+        compatible.value = true
+        waitingForPicture.value = true
+        playing.value = false
+        await nextTick()
+        if (generation !== playbackGeneration) return
+        media.load()
+
+        if (hls) {
+            hls.attachMedia(media)
+            hls.startLoad(position < trackDuration ? position : 0)
+        } else {
+            media.addEventListener('loadedmetadata', () => {
+                if (generation === playbackGeneration && position < media.duration) media.currentTime = position
+            }, {once: true})
+            media.src = url
+        }
+        setSpeed()
+        if (playRequested) void play()
+    } catch {
+        if (generation !== playbackGeneration) return
+        if (compatible.value) compatibilityFailed('transcodeFailed')
+        else failure.value = 'transcodeFailed'
+    } finally {
+        if (compatibilityProbe.value === probe) {
+            compatibilityProbe.value = undefined
+            if (!compatible.value) {
+                hls?.destroy()
+                hls = undefined
+            }
+        }
+    }
+}
+
+function transcodeError(status?: number): CompatibilityFailure {
+    if (status === 503) return 'transcodeUnavailable'
+    if (status === 409) return 'sourceChanged'
+    return 'transcodeFailed'
+}
+
+function onMediaError() {
+    if (compatible.value) {
+        if (video.value?.error) compatibilityFailed('transcodeFailed')
+        return
+    }
+    directFailed.value = true
+    if (!attemptedCompatibility) void startCompatible()
+}
+
+function onMediaData() {
+    const media = video.value
+    if (!media) return
+    if (compatible.value) {
+        if (media.videoWidth) waitingForPicture.value = false
+        return
+    }
+    directFailed.value = false
+    directHasNoPicture.value = !media.videoWidth
+    if (!media.videoWidth && !attemptedCompatibility) void startCompatible()
 }
 
 function togglePlayback() {
     if (video.value?.paused) void play()
-    else video.value?.pause()
+    else pause()
 }
 
 function mediaTime() {
@@ -125,7 +322,7 @@ function setSleepTimer() {
     window.clearTimeout(timer)
     if (sleepMinutes.value === 0) return
     timer = window.setTimeout(() => {
-        video.value?.pause()
+        pause()
         sleepMinutes.value = 0
     }, sleepMinutes.value * 60 * 1000)
 }
@@ -133,7 +330,13 @@ function setSleepTimer() {
 watch(src, async (source, _, onCleanup) => {
     let superseded = false
     onCleanup(() => { superseded = true })
-    failed.value = false
+    stopCompatible()
+    playRequested = playMode.value === 'automatic'
+    attemptedCompatibility = false
+    audioOnly.value = false
+    directHasNoPicture.value = false
+    failure.value = undefined
+    directFailed.value = false
     playing.value = false
     time.value = 0
     duration.value = 0
@@ -142,7 +345,7 @@ watch(src, async (source, _, onCleanup) => {
     video.value.volume = volume.value
     video.value.muted = muted.value
     setSpeed()
-    if (playMode.value === 'automatic') void play()
+    if (playRequested) void play()
 }, {immediate: true})
 
 watch(index, async () => {
@@ -159,6 +362,7 @@ watch(index, async () => {
 
 onMounted(() => document.addEventListener('fullscreenchange', updateFullscreen))
 onBeforeUnmount(() => {
+    stopCompatible()
     window.clearTimeout(timer)
     document.removeEventListener('fullscreenchange', updateFullscreen)
 })
@@ -193,14 +397,17 @@ const supportsPip = document.pictureInPictureEnabled
             <div class="player-columns">
                 <div class="player-main">
                     <div ref="stage" class="stage" tabindex="0" :aria-label="t('player')" role="region" @keydown="playerKeys">
-                        <div class="picture" :class="{'audio-picture': audio}">
-                            <video ref="video" :src="src" playsinline preload="metadata"
+                        <div class="picture" :class="{'audio-picture': audioLayout}">
+                            <video ref="video" :src="compatible ? undefined : src" playsinline preload="metadata"
                                 @click="togglePlayback" @durationchange="mediaTime" @timeupdate="mediaTime"
                                 @volumechange="mediaVolume" @play="playing = true" @pause="playing = false"
-                                @ended="ended" @error="failed = true"></video>
-                            <div v-if="audio" class="audio-art" aria-hidden="true"><Music2 :size="58" :stroke-width="1.3" /></div>
-                            <div v-if="failed" class="play-error" role="alert">
-                                <CircleAlert :size="32" /><strong>{{ t('mediaError') }}</strong>
+                                @ended="ended" @loadeddata="onMediaData" @error="onMediaError"></video>
+                            <div v-if="audioLayout" class="audio-art" aria-hidden="true"><Music2 :size="58" :stroke-width="1.3" /></div>
+                            <div v-if="preparing" class="play-error" role="status">
+                                <LoaderCircle :size="28" /><strong>{{ t('preparingPlayback') }}</strong>
+                            </div>
+                            <div v-else-if="playbackBlocked" class="play-error" role="alert">
+                                <CircleAlert :size="32" /><strong>{{ t(failure ?? 'mediaError') }}</strong>
                                 <a class="button" :href="src" :download="current.name"><Download />{{ t('download') }}</a>
                             </div>
                             <button v-else-if="!playing" type="button" class="play-overlay" :aria-label="t('play')" @click="play">
@@ -214,7 +421,7 @@ const supportsPip = document.pictureInPictureEnabled
                             <div class="control-row">
                                 <button class="control" type="button" :disabled="index <= 0" :aria-label="t('previous')"
                                     :title="t('previous')" @click="select(index - 1)"><SkipBack :size="19" fill="currentColor" /></button>
-                                <button class="control primary-control" type="button" :disabled="failed"
+                                <button class="control primary-control" type="button" :disabled="playbackBlocked"
                                     :aria-label="t(playing ? 'pause' : 'play')" :title="t(playing ? 'pause' : 'play')" @click="togglePlayback">
                                     <component :is="playing ? Pause : Play" :size="19" fill="currentColor" />
                                 </button>
@@ -231,7 +438,7 @@ const supportsPip = document.pictureInPictureEnabled
                                 <select v-model.number="speed" class="speed" :aria-label="t('speed')" :title="t('speed')" @change="setSpeed">
                                     <option v-for="rate in [0.5, 1, 1.25, 1.5, 2, 3]" :key="rate" :value="rate">{{ rate }}×</option>
                                 </select>
-                                <button v-if="supportsPip && !audio" class="control pip" type="button" :disabled="failed || !duration"
+                                <button v-if="supportsPip && !audioLayout" class="control pip" type="button" :disabled="playbackBlocked || preparing || !duration"
                                     :aria-label="t('pictureInPicture')" :title="t('pictureInPicture')" @click="togglePip">
                                     <PictureInPicture2 :size="19" />
                                 </button>
@@ -245,6 +452,11 @@ const supportsPip = document.pictureInPictureEnabled
                     </div>
 
                     <div class="play-preferences">
+                        <button v-if="!showAudio" class="button quiet" type="button" :aria-pressed="compatible"
+                            :disabled="!compatible && !!compatibilityProbe"
+                            @click="compatible ? playOriginal() : startCompatible(true)">
+                            <Film :size="17" />{{ t(compatible ? 'originalPlayback' : 'compatiblePlayback') }}
+                        </button>
                         <label class="play-pref">
                             <Repeat2 :size="17" /><span class="sr-only">{{ t('playMode') }}</span>
                             <select v-model="playMode" class="select">
@@ -262,6 +474,7 @@ const supportsPip = document.pictureInPictureEnabled
                             </select>
                         </label>
                     </div>
+                    <p v-if="failure && !playbackBlocked" class="play-notice" role="status">{{ t(failure) }}</p>
                 </div>
 
                 <aside class="queue" aria-labelledby="queue-title">
@@ -315,6 +528,7 @@ const supportsPip = document.pictureInPictureEnabled
 .play-overlay:hover { background: var(--accent); color: #221517; }
 .play-error { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 11px; padding: 10px; background: #08090de8; text-align: center; }
 .play-error > svg { color: var(--accent); }
+.play-notice { color: var(--muted); font-size: 12px; }
 
 .controls { padding: 3px 12px 7px; background: #191c23; }
 .seek, .volume { display: block; margin: 0; accent-color: var(--accent); cursor: pointer; }

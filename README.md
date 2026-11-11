@@ -43,6 +43,8 @@ Start `lantube` (or `lantube.exe`) and open [http://127.0.0.1:8888](http://127.0
 
 To enable access from other devices on a trusted LAN or choose other media directories, use [config.example.toml](config.example.toml) as a template for `config.toml`. LanTube looks in the current working directory first, then beside the executable. Relative media paths are resolved from the configuration file's directory. The example listens on `0.0.0.0:8888`.
 
+Compatible playback and server-generated thumbnails require `ffmpeg` and `ffprobe` on the server's `PATH`, from FFmpeg 6.1 or later, with `libx264` enabled. Put the tools in an absolute `PATH` directory outside your media folders before starting LanTube. LanTube tries to generate H.264/AAC segments and thumbnails on demand when the browser cannot decode the video. You can also select **Compatible playback** below the player. The server reads the source files as-is.
+
 ---
 如果您对股票，期货，外汇等金融交易感兴趣
 

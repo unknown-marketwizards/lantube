@@ -1,43 +1,77 @@
+import {conversionUrl} from './library'
+
 interface Preview {
     image: string | undefined
     duration: number
 }
 
 const cache = new Map<string, Preview>()
-const jobs: Array<() => Promise<void>> = []
-let active = 0
+const localSlot = limitPreviews(2)
+const serverSlot = limitPreviews(2)
 
-function runNext() {
-    while (active < 2 && jobs.length) {
-        const job = jobs.shift()!
-        active++
-        void job().finally(() => {
-            active--
-            runNext()
-        })
+function limitPreviews(limit: number) {
+    const waiting: Array<() => void> = []
+    let active = 0
+    return async function run<T>(work: () => Promise<T>): Promise<T> {
+        if (active < limit) active++
+        else await new Promise<void>((resolve) => waiting.push(resolve))
+        try {
+            return await work()
+        } finally {
+            const next = waiting.shift()
+            if (next) next()
+            else active--
+        }
     }
 }
 
-export function getPreview(src: string, audio: boolean, signal: AbortSignal): Promise<Preview | undefined> {
+export async function getPreview(src: string, audio: boolean, signal: AbortSignal): Promise<Preview | undefined> {
     const cached = cache.get(src)
     if (cached) {
         cache.delete(src)
         cache.set(src, cached)
-        return Promise.resolve(cached)
+        return cached
     }
 
-    return new Promise((resolve) => {
-        jobs.push(async () => {
-            if (signal.aborted) return resolve(undefined)
-            const preview = cache.get(src) ?? await capture(src, audio, signal)
-            if (preview) {
-                cache.set(src, preview)
-                if (cache.size > 240) cache.delete(cache.keys().next().value!)
-            }
-            resolve(preview)
-        })
-        runNext()
+    const local = await localSlot(async () => {
+        if (signal.aborted) return
+        return cache.get(src) ?? capture(src, audio, signal)
     })
+    if (signal.aborted) return
+    const saved = cache.get(src)
+    if (saved) return saved
+
+    const server = !audio && !local?.image ? await serverSlot(async () => {
+        if (signal.aborted) return
+        return cache.get(src) ?? serverPreview(src, local?.duration ?? 0, signal)
+    }) : undefined
+    const preview = server ?? local
+    if (signal.aborted) return
+    if (preview && (audio || preview.image || server)) {
+        cache.set(src, preview)
+        if (cache.size > 240) cache.delete(cache.keys().next().value!)
+    }
+    return preview
+}
+
+async function serverPreview(src: string, localDuration: number, signal: AbortSignal): Promise<Preview | undefined> {
+    try {
+        const response = await fetch(conversionUrl(src, 'thumbnail'), {signal})
+        if (response.status === 422) return {image: undefined, duration: localDuration}
+        if (!response.ok || response.headers.get('content-type') !== 'image/jpeg') return
+        const image = await response.blob()
+        const duration = Number.isFinite(localDuration) && localDuration > 0
+            ? localDuration
+            : Number(response.headers.get('x-media-duration'))
+        return await new Promise((resolve) => {
+            const reader = new FileReader()
+            reader.onload = () => resolve({image: String(reader.result), duration})
+            reader.onerror = () => resolve(undefined)
+            reader.readAsDataURL(image)
+        })
+    } catch {
+        return undefined
+    }
 }
 
 function capture(src: string, audio: boolean, signal: AbortSignal): Promise<Preview | undefined> {

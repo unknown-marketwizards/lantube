@@ -5,7 +5,7 @@ import {preferences} from './preferences'
 const directories = reactive(new Map<string, ExplorerItem[]>())
 const requests = new Map<string, Promise<ExplorerItem[]>>()
 const collator = new Intl.Collator(undefined, {numeric: true, sensitivity: 'base'})
-const audioExtensions = new Set(['aac', 'flac', 'm4a', 'mp3', 'ogg', 'opus', 'wav'])
+const audioExtensions = new Set(['aac', 'flac', 'm4a', 'mp3', 'opus', 'wav'])
 
 function orderName(name: string): string {
     return name.replace(/第([一二两三四五六七八九]?十[一二两三四五六七八九]?|[一二两三四五六七八九])(?=[季集部卷章])/g, (_, numeral: string) => {
@@ -63,8 +63,15 @@ export function title(name: string): string {
 
 export function mediaUrl(dir: string, item: ExplorerItem): string {
     const path = joinPath(dir, item.name).split('/').map(encodeURIComponent).join('/')
-    const revision = item.modified ?? item.size
-    return '/file' + path + (revision === undefined ? '' : '?v=' + revision)
+    const version = new URLSearchParams()
+    if (item.modified !== undefined) version.set('v', String(item.modified))
+    if (item.size !== undefined) version.set('size', String(item.size))
+    const query = version.toString()
+    return '/file' + path + (query ? '?' + query : '')
+}
+
+export function conversionUrl(source: string, endpoint: 'transcode' | 'thumbnail'): string {
+    return source.replace(/^\/file\//, '/api/' + endpoint + '/')
 }
 
 export function formatSize(size?: number): string {

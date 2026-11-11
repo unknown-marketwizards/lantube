@@ -223,12 +223,20 @@ pub async fn serve_media(
     if !is_normal_component(&root) {
         return Err(AppError::bad_request("Invalid media root"));
     }
-    let (_, file) = resolve_media(&state.data, &format!("{root}/{path}")).await?;
+    let file = resolve_file(&state.data, &format!("{root}/{path}")).await?;
+    let response = ServeFile::new(file).try_call(request).await?;
+    Ok(response.map(Body::new))
+}
+
+pub async fn resolve_file(
+    data: &HashMap<String, PathBuf>,
+    path: &str,
+) -> Result<PathBuf, AppError> {
+    let (_, file) = resolve_media(data, path).await?;
     if !fs::metadata(&file).await?.is_file() {
         return Err(io::Error::from(io::ErrorKind::NotFound).into());
     }
-    let response = ServeFile::new(file).try_call(request).await?;
-    Ok(response.map(Body::new))
+    Ok(file)
 }
 
 fn is_supported_file_type(path: &Path) -> bool {
@@ -294,6 +302,7 @@ mod tests {
             .unwrap();
         let state = AppState {
             data: HashMap::from([("media".to_string(), directory.path().to_owned())]),
+            ..Default::default()
         };
         let route = || RoutePath(("media".to_string(), "clip.mp4".to_string()));
         let request = Request::builder()

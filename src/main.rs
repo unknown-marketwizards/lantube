@@ -1,6 +1,7 @@
 mod error;
 mod frontend;
 mod library;
+mod transcode;
 mod upload;
 
 use anyhow::{Context, Result, ensure};
@@ -18,6 +19,7 @@ use std::{
     io::ErrorKind,
     net::{Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 const MAX_UPLOAD_SIZE: u64 = 20 * 1024 * 1024 * 1024;
@@ -33,9 +35,11 @@ struct Config {
     server: ServerConfig,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct AppState {
     data: HashMap<String, PathBuf>,
+    tools: transcode::MediaTools,
+    media: Arc<transcode::MediaAccess>,
 }
 
 #[tokio::main]
@@ -45,12 +49,19 @@ async fn main() -> Result<()> {
         .parent()
         .expect("executable must have a parent directory");
     let config = load_config(&env::current_dir()?, executable_dir).await?;
-    let state = AppState { data: config.data };
+    let state = AppState {
+        tools: transcode::MediaTools::from_path(&config.data),
+        data: config.data,
+        media: Arc::default(),
+    };
+    state.media.audio.start_reaper();
     let app = Router::new()
         .route("/", get(frontend::index))
         .route("/{*path}", get(frontend::asset))
         .route("/api/explorer", post(library::explorer))
         .route("/api/mkdir", post(library::mkdir))
+        .route("/api/transcode/{*path}", get(transcode::playback))
+        .route("/api/thumbnail/{*path}", get(transcode::thumbnail))
         .route(
             "/api/upload",
             post(upload::upload).layer(DefaultBodyLimit::max(
