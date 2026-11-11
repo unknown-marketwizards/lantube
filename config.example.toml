@@ -3,3 +3,18 @@ share = "share"
 
 [server]
 addr = "0.0.0.0:8888"
+
+# 可选账号。省略整个 auth 配置时，所有访问者都可浏览、播放、上传和新建目录。
+# 添加账号后，浏览器会提示登录。viewer 可以浏览和播放，editor 还可以上传和新建目录。
+# 省略 role 时默认为 viewer。为每个账号填写独立的强密码，保护 config.toml，修改后重启。
+# 启用认证前，请创建共享目录，并将配置、程序和工作目录放在共享目录之外。
+# 对外访问时使用 HTTPS 反向代理，并将上面的 addr 改为 127.0.0.1:8888。
+# 启用认证后，直接调用上传或新建目录接口还需发送 X-LanTube-Write: 1。
+
+# [auth.users.reader]
+# password = ""
+# role = "viewer"
+
+# [auth.users.operator]
+# password = ""
+# role = "editor"

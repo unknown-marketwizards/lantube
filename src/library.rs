@@ -3,6 +3,7 @@ use axum::{
     Json,
     body::Body,
     extract::{Path as RoutePath, Request, State},
+    http::{HeaderValue, header},
     response::Response,
 };
 use serde::{Deserialize, Serialize};
@@ -236,7 +237,12 @@ pub async fn serve_media(
         return Err(AppError::bad_request("Invalid media root"));
     }
     let file = resolve_file(&state.data, &format!("{root}/{path}")).await?;
-    let response = ServeFile::new(file).try_call(request).await?;
+    let mut response = ServeFile::new(file).try_call(request).await?;
+    // 原片每次复用前都需重新校验，重启后启用认证时同样适用。
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-cache"),
+    );
     Ok(response.map(Body::new))
 }
 
@@ -356,6 +362,10 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
         assert_eq!(response.headers()[header::CONTENT_RANGE], "bytes 2-4/10");
+        assert_eq!(
+            response.headers()[header::CACHE_CONTROL],
+            "private, no-cache"
+        );
         assert_eq!(
             &to_bytes(response.into_body(), 10).await.unwrap()[..],
             b"234"

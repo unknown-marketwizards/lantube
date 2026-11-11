@@ -6,6 +6,7 @@ const directories = reactive(new Map<string, {items: ExplorerItem[]; includeOthe
 const requests = new Map<string, {promise: Promise<ExplorerItem[]>; includeOther: boolean}>()
 const collator = new Intl.Collator(undefined, {numeric: true, sensitivity: 'base'})
 const audioExtensions = new Set(['aac', 'flac', 'm4a', 'mp3', 'opus', 'wav'])
+export const canWrite = ref(false)
 
 function orderName(name: string): string {
     return name.replace(/第([一二两三四五六七八九]?十[一二两三四五六七八九]?|[一二两三四五六七八九])(?=[季集部卷章])/g, (_, numeral: string) => {
@@ -131,8 +132,11 @@ export function loadDirectory(path: string, {refresh = false, includeOther}: {re
     includeOther ??= refresh && (pending?.includeOther ?? cached?.includeOther ?? false)
     if (pending && !refresh && (!includeOther || pending.includeOther)) return pending.promise
     if (cached && !refresh && (!includeOther || cached.includeOther)) return Promise.resolve(cached.items)
-    const promise = explore(path, includeOther).then((items) => {
-        if (requests.get(path)?.promise === promise) directories.set(path, {items, includeOther})
+    const promise = explore(path, includeOther).then(({items, canWrite: writable}) => {
+        if (requests.get(path)?.promise === promise) {
+            canWrite.value = writable
+            directories.set(path, {items, includeOther})
+        }
         return items
     }).finally(() => {
         if (requests.get(path)?.promise === promise) requests.delete(path)

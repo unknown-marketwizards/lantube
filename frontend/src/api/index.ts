@@ -5,22 +5,27 @@ export interface ExplorerItem {
     modified?: number
 }
 
-async function post(path: string, body: object): Promise<Response> {
+const writeHeader = 'X-LanTube-Write'
+
+async function post(path: string, body: object, write = false): Promise<Response> {
+    const headers = new Headers({'Content-Type': 'application/json'})
+    if (write) headers.set(writeHeader, '1')
     const response = await fetch(path, {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers,
         body: JSON.stringify(body),
     })
     if (!response.ok) throw new Error(await response.text() || String(response.status))
     return response
 }
 
-export async function explore(path: string, includeOther: boolean): Promise<ExplorerItem[]> {
-    return (await post('/api/explorer', {path, includeOther})).json()
+export async function explore(path: string, includeOther: boolean): Promise<{items: ExplorerItem[]; canWrite: boolean}> {
+    const response = await post('/api/explorer', {path, includeOther})
+    return {items: await response.json(), canWrite: response.headers.get('X-LanTube-Can-Write') === 'true'}
 }
 
 export async function createDirectory(path: string): Promise<void> {
-    await post('/api/mkdir', {path})
+    await post('/api/mkdir', {path}, true)
 }
 
 export function uploadFile(path: string, file: File, progress: (percent: number) => void): Promise<void> {
@@ -30,6 +35,7 @@ export function uploadFile(path: string, file: File, progress: (percent: number)
         form.append('file', file)
         const request = new XMLHttpRequest()
         request.open('POST', '/api/upload')
+        request.setRequestHeader(writeHeader, '1')
         request.upload.onprogress = (event) => {
             if (event.lengthComputable) progress(Math.round(event.loaded / event.total * 100))
         }

@@ -9,7 +9,7 @@ import {
 import {createDirectory, uploadFile} from '../api'
 import MediaCover from '../components/MediaCover.vue'
 import {
-    directoryPath, extension, folders, formatSize, isAudio, joinPath, libraryRoute, loadDirectory,
+    canWrite, directoryPath, extension, folders, formatSize, isAudio, joinPath, libraryRoute, loadDirectory,
     mediaUrl, orderedFiles, pathName, playerRoute, title, useDirectory,
 } from '../library'
 import {preferences} from '../preferences'
@@ -22,6 +22,7 @@ const atRoot = computed(() => path.value === '/')
 const showOther = computed(() => !atRoot.value && route.query.other === '1')
 const heading = computed(() => atRoot.value ? t('library') : pathName(path.value))
 const {items, pending, error, reload} = useDirectory(path, showOther)
+const canManageFolder = computed(() => canWrite.value && !atRoot.value && !pending.value && !error.value)
 
 const query = ref('')
 const searchInput = ref<HTMLInputElement>()
@@ -66,6 +67,7 @@ function openFolderDialog() {
 }
 
 async function makeFolder() {
+    if (!canManageFolder.value || creating.value) return
     const name = folderName.value.trim()
     if (!name || name === '.' || name === '..' || name.includes('/') || name.includes('\\')) {
         folderError.value = t('invalidName')
@@ -89,7 +91,7 @@ const fileInput = ref<HTMLInputElement>()
 const upload = ref<{name: string; index: number; total: number; percent: number}>()
 const uploadResult = ref<{count: number; errors: string[]}>()
 const dragDepth = ref(0)
-const canUpload = computed(() => !atRoot.value && !upload.value && !error.value && !pending.value)
+const canUpload = computed(() => canManageFolder.value && !upload.value)
 
 async function sendFiles(selected: File[]) {
     if (!selected.length || !canUpload.value) return
@@ -189,13 +191,15 @@ function dropFiles(event: DragEvent) {
                     @click="router.replace(libraryRoute(path, !showOther))">
                     <Files /><span>{{ t('showOtherFiles') }}</span>
                 </button>
-                <button class="button" type="button" :disabled="pending || !!error" @click="openFolderDialog">
-                    <FolderPlus /><span>{{ t('newFolder') }}</span>
-                </button>
-                <button class="button primary" type="button" :disabled="!canUpload" @click="fileInput?.click()">
-                    <Upload /><span>{{ t('upload') }}</span>
-                </button>
-                <input ref="fileInput" type="file" multiple hidden @change="chooseFiles">
+                <template v-if="canWrite">
+                    <button class="button" type="button" :disabled="!canManageFolder" @click="openFolderDialog">
+                        <FolderPlus /><span>{{ t('newFolder') }}</span>
+                    </button>
+                    <button class="button primary" type="button" :disabled="!canUpload" @click="fileInput?.click()">
+                        <Upload /><span>{{ t('upload') }}</span>
+                    </button>
+                    <input ref="fileInput" type="file" multiple hidden @change="chooseFiles">
+                </template>
             </div>
         </div>
 
@@ -229,7 +233,7 @@ function dropFiles(event: DragEvent) {
         <div v-else-if="!allFolders.length && !files.length && !otherFiles.length" class="status-panel">
             <component :is="atRoot ? HardDrive : FolderOpen" :size="32" />
             <strong>{{ t(atRoot ? 'noSources' : 'emptyFolder') }}</strong>
-            <p>{{ t(atRoot ? 'noSourcesHelp' : 'emptyFolderHelp') }}</p>
+            <p v-if="atRoot || canWrite">{{ t(atRoot ? 'noSourcesHelp' : 'emptyFolderHelp') }}</p>
         </div>
         <div v-else-if="!visibleFolders.length && !visibleFiles.length && !visibleOtherFiles.length" class="status-panel">
             <Search :size="28" /><strong>{{ t('noResults') }}</strong>
