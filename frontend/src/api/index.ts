@@ -5,7 +5,37 @@ export interface ExplorerItem {
     modified?: number
 }
 
+export interface Chapter {
+    startMs: number
+    title: string
+}
+
+export interface ChapterSet {
+    version: string
+    chapters: Chapter[]
+}
+
 const writeHeader = 'X-LanTube-Write'
+
+export async function loadChapters(path: string, revision: string, signal: AbortSignal): Promise<ChapterSet | undefined> {
+    const response = await fetch('/api/chapters?' + new URLSearchParams({path, revision}), {signal})
+    if (response.status === 409) return
+    if (!response.ok) throw new Error(String(response.status))
+    return response.json()
+}
+
+export async function saveChapters(path: string, revision: string, version: string, chapters: Chapter[]): Promise<ChapterSet | undefined> {
+    const response = await fetch('/api/chapters', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json', [writeHeader]: '1'},
+        body: JSON.stringify({path, revision, version, chapters}),
+    })
+    if (response.status === 409) return
+    if (response.status === 400) throw new Error('chapterTimeInvalid')
+    if (response.status === 503 || response.status === 422) throw new Error('chapterDurationUnavailable')
+    if (!response.ok) throw new Error(String(response.status))
+    return response.json()
+}
 
 async function post(path: string, body: object, write = false): Promise<Response> {
     const headers = new Headers({'Content-Type': 'application/json'})

@@ -70,7 +70,7 @@ pub async fn upload(
                     ));
                 }
                 let path = read_path(field).await?;
-                directory = Some(resolve_directory(&state.data, &path).await?);
+                directory = Some(resolve_directory(&state, &path).await?);
             }
             Some("file") => {
                 let parent: &Path = directory.as_deref().ok_or_else(|| {

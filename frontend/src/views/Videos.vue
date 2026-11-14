@@ -5,14 +5,17 @@ import {useI18n} from 'vue-i18n'
 import type Hls from 'hls.js'
 import {
     ArrowLeft, CircleAlert, Clock3, Download, Film, ListVideo, LoaderCircle, Maximize, Minimize,
-    Music2, Pause, PictureInPicture2, Play, Repeat2, SkipBack, SkipForward, Volume2, VolumeX,
+    Crosshair, ListTree, Music2, Pause, PictureInPicture2, Play, Repeat2, Scissors, SkipBack, SkipForward, Volume2, VolumeX, X,
 } from '@lucide/vue'
-import type {ExplorerItem} from '../api'
+import type {Chapter, ExplorerItem} from '../api'
+import {chapterAt, chapterTime, maxChapters, maxChapterTitle, minChapterMs, parseChapterTime, useChapters} from '../chapters'
+import ChapterList from '../components/ChapterList.vue'
 import MediaCover from '../components/MediaCover.vue'
 import {
-    conversionUrl, directoryPath, extension, findUnlistedFile, formatSize, isAudio, libraryRoute, mediaUrl,
+    canWrite, conversionUrl, directoryPath, extension, findUnlistedFile, formatSize, isAudio, joinPath, libraryRoute, mediaUrl,
     orderedFiles, playerRoute, title, useDirectory,
 } from '../library'
+import {unloadMedia, useMediaSource} from '../mediaSource'
 import {formatTime} from '../thumbnails'
 
 const {t} = useI18n()
@@ -33,7 +36,7 @@ const index = computed(() => fileName.value !== undefined
     : 0)
 const current = computed(() => playlist.value[index.value])
 const backToLibrary = computed(() => libraryRoute(directory.value, current.value?.type === 'other'))
-const src = computed(() => current.value ? mediaUrl(directory.value, current.value) : '')
+const fileSource = computed(() => current.value ? mediaUrl(directory.value, current.value) : '')
 const audio = computed(() => !!current.value && isAudio(current.value.name))
 const audioOnly = ref(false)
 const directPicture = ref<boolean>()
@@ -65,6 +68,183 @@ const fullscreen = ref(false)
 const playMode = ref<'automatic' | 'manual'>('automatic')
 const sleepMinutes = ref(0)
 let timer: number | undefined
+
+const {src, revision: mediaRevision, loading: mediaLoading, failed: mediaLoadFailed, reload: reloadMedia} =
+    useMediaSource(fileSource, unloadPlayback)
+const chapterPath = computed(() => current.value ? joinPath(directory.value, current.value.name) : '')
+const {
+    chapters, loading: chapterLoading, saving: chapterSaving, issue: chapterIssue,
+    ready: chaptersReady, reload: reloadChapters, save: commitChapters,
+} = useChapters(chapterPath, mediaRevision, reloadMedia)
+const canEditChapters = computed(() => canWrite.value && chaptersReady.value)
+const canSeek = computed(() => !preparing.value && !playbackBlocked.value && duration.value > 0)
+const canSplit = computed(() => canEditChapters.value && editStart.value === undefined && !chapterSaving.value
+    && chapterIssue.value !== 'chapterConflict' && canSeek.value)
+const activeChapter = computed(() => chapterAt(chapters.value, time.value))
+const chapterTitle = (chapter: Chapter, index: number) => chapter.title || t('chapterNumber', {number: index + 1})
+const currentChapter = computed(() => chapters.value[activeChapter.value])
+const chosenTab = ref<'queue' | 'chapters'>()
+const railTab = computed(() => chosenTab.value ?? (chapters.value.length ? 'chapters' : 'queue'))
+const chapterPicker = ref<HTMLDialogElement>()
+const pickerOpen = ref(false)
+const chapterEditor = ref<HTMLFormElement>()
+const editStart = ref<number>()
+const editTitle = ref('')
+const editTime = ref('')
+const editIssue = ref<'chapterTimeInvalid' | 'chapterTitleInvalid'>()
+const editIndex = computed(() => chapters.value.findIndex(chapter => chapter.startMs === editStart.value))
+const editDraft = computed(() => editStart.value === 0 ? 0 : parseChapterTime(editTime.value))
+const otherChapters = computed(() => chapters.value.filter(chapter => chapter.startMs !== editStart.value))
+const playheadMs = computed(() => Math.round(time.value * 1000))
+const canPreviewCut = computed(() => canSeek.value && (editDraft.value === editStart.value || validCut(editDraft.value, otherChapters.value))
+    && editDraft.value / 1000 < duration.value)
+const canUsePlayhead = computed(() => canSeek.value && (playheadMs.value === editStart.value || validCut(playheadMs.value, otherChapters.value))
+    && playheadMs.value !== editDraft.value)
+const editSteps = [-1000, -100, 100, 1000]
+let editTrigger: HTMLElement | undefined
+const chapterNotice = ref<{key: 'chapterAdded' | 'chapterTooClose' | 'chapterLimit'; time?: string}>()
+const chapterSegments = computed(() => {
+    const end = duration.value * 1000
+    return chapters.value.flatMap((chapter, index) => {
+        if (chapter.startMs >= end) return []
+        const length = Math.min(chapters.value[index + 1]?.startMs ?? end, end) - chapter.startMs
+        const filled = Math.max(0, Math.min(1, (time.value * 1000 - chapter.startMs) / length))
+        return [{start: chapter.startMs, width: length / end * 100 + '%', fill: filled * 100 + '%'}]
+    })
+})
+
+function seekToCut(startMs: number) {
+    if (!video.value || startMs / 1000 >= duration.value) return
+    video.value.currentTime = startMs / 1000
+    mediaTime()
+}
+
+function selectChapter(chapter: Chapter) {
+    seekToCut(chapter.startMs)
+    chapterPicker.value?.close()
+}
+
+function openChapterPicker() {
+    chapterPicker.value?.showModal()
+    pickerOpen.value = true
+}
+
+function validCut(startMs: number, chaptersToCheck: Chapter[]): boolean {
+    return Number.isSafeInteger(startMs)
+        && startMs >= minChapterMs
+        && startMs <= duration.value * 1000 - minChapterMs
+        && chaptersToCheck.every(chapter => Math.abs(chapter.startMs - startMs) >= minChapterMs)
+}
+
+async function splitChapter() {
+    if (!canSplit.value || !video.value) return
+    const at = Math.round(video.value.currentTime * 1000)
+    const source = src.value
+    const next = chapters.value.length ? chapters.value : [{startMs: 0, title: ''}]
+    chosenTab.value = 'chapters'
+    chapterNotice.value = undefined
+    if (next.length >= maxChapters) {
+        chapterNotice.value = {key: 'chapterLimit'}
+        return
+    }
+    if (!validCut(at, next)) {
+        chapterNotice.value = {key: 'chapterTooClose'}
+        return
+    }
+    const newChapters = [...next, {startMs: at, title: ''}].sort((a, b) => a.startMs - b.startMs)
+    if (await commitChapters(newChapters) && src.value === source) {
+        chapterNotice.value = {key: 'chapterAdded', time: chapterTime(at)}
+    }
+}
+
+async function openChapterEditor(chapter: Chapter) {
+    const fromPicker = chapterPicker.value?.open
+    editTrigger = fromPicker
+        ? undefined
+        : document.activeElement instanceof HTMLElement ? document.activeElement : undefined
+    chapterPicker.value?.close()
+    pause()
+    editStart.value = chapter.startMs
+    editTitle.value = chapter.title
+    editTime.value = chapterTime(chapter.startMs)
+    editIssue.value = undefined
+    chapterNotice.value = undefined
+    await nextTick()
+    chapterEditor.value?.focus({preventScroll: true})
+    const bounds = stage.value?.getBoundingClientRect()
+    if (bounds && !fullscreen.value && (bounds.top < 68 || bounds.bottom > window.innerHeight - 12)) {
+        stage.value?.scrollIntoView({block: 'start'})
+    }
+}
+
+function closeChapterEditor(restoreFocus = true) {
+    editStart.value = undefined
+    if (restoreFocus) {
+        const trigger = editTrigger?.isConnected ? editTrigger : stage.value
+        trigger?.focus({preventScroll: true})
+    }
+    editTrigger = undefined
+}
+
+function cancelChapterEdit() {
+    if (!chapterSaving.value) closeChapterEditor()
+}
+
+function previewCut() {
+    if (!canPreviewCut.value) return
+    pause()
+    seekToCut(editDraft.value)
+}
+
+function updateEditTime(startMs: number) {
+    editIssue.value = undefined
+    editTime.value = chapterTime(startMs)
+}
+
+function nudgeCut(delta: number) {
+    const startMs = editDraft.value + delta
+    if (!validCut(startMs, otherChapters.value)) return
+    updateEditTime(startMs)
+    previewCut()
+}
+
+function usePlayhead() {
+    if (!canUsePlayhead.value || !video.value) return
+    pause()
+    mediaTime()
+    if (canUsePlayhead.value) updateEditTime(playheadMs.value)
+}
+
+async function saveChapterEdit() {
+    editIssue.value = undefined
+    const original = chapters.value.find(chapter => chapter.startMs === editStart.value)
+    if (!original) return
+    const startMs = editDraft.value
+    if (startMs !== original.startMs && !validCut(startMs, otherChapters.value)) {
+        editIssue.value = 'chapterTimeInvalid'
+        return
+    }
+    const title = editTitle.value.trim()
+    if ([...title].length > maxChapterTitle || /[\u0000-\u001f\u007f-\u009f]/.test(title)) {
+        editIssue.value = 'chapterTitleInvalid'
+        return
+    }
+    if (await commitChapters([...otherChapters.value, {startMs, title}].sort((a, b) => a.startMs - b.startMs))) {
+        closeChapterEditor()
+    }
+}
+
+async function removeChapter() {
+    if (editStart.value === 0 && chapters.value.length !== 1) return
+    if (await commitChapters(otherChapters.value)) {
+        closeChapterEditor()
+    }
+}
+
+function retryChapters() {
+    if (editStart.value !== undefined) closeChapterEditor()
+    reloadChapters()
+}
 
 watch([directory, lookupName], async ([dir, name], _, onCleanup) => {
     unlisted.value = undefined
@@ -101,19 +281,20 @@ function pause() {
     video.value?.pause()
 }
 
-function stopCompatible() {
+function unloadPlayback() {
     playbackGeneration++
     compatibilityProbe.value?.abort()
     compatibilityProbe.value = undefined
     hls?.destroy()
     hls = undefined
+    unloadMedia(video.value)
     compatible.value = false
     waitingForPicture.value = false
 }
 
 async function playOriginal() {
     const position = video.value?.currentTime ?? 0
-    stopCompatible()
+    unloadPlayback()
     playRequested = true
     const generation = playbackGeneration
     failure.value = undefined
@@ -253,6 +434,7 @@ function transcodeError(status?: number): CompatibilityFailure {
 }
 
 function onMediaError() {
+    if (!src.value) return
     if (compatible.value) {
         if (video.value?.error) compatibilityFailed('transcodeFailed')
         return
@@ -314,8 +496,9 @@ function select(at: number) {
 }
 
 function ended() {
+    if (!src.value || !video.value?.ended) return
     playing.value = false
-    select(index.value + 1)
+    if (editStart.value === undefined) select(index.value + 1)
 }
 
 function updateFullscreen() {
@@ -341,6 +524,9 @@ function playerKeys(event: KeyboardEvent) {
         event.preventDefault()
         const delta = event.key === 'ArrowLeft' ? -5 : 5
         video.value.currentTime = Math.max(0, Math.min(duration.value, video.value.currentTime + delta))
+    } else if (event.code === 'KeyC' && canSplit.value && !event.repeat) {
+        event.preventDefault()
+        void splitChapter()
     }
 }
 
@@ -356,7 +542,10 @@ function setSleepTimer() {
 watch(src, async (source, _, onCleanup) => {
     let superseded = false
     onCleanup(() => { superseded = true })
-    stopCompatible()
+    chosenTab.value = undefined
+    chapterNotice.value = undefined
+    closeChapterEditor(false)
+    chapterPicker.value?.close()
     playRequested = playMode.value === 'automatic'
     attemptedCompatibility = false
     audioOnly.value = false
@@ -374,7 +563,7 @@ watch(src, async (source, _, onCleanup) => {
     if (playRequested) void play()
 }, {immediate: true})
 
-watch(index, async () => {
+watch([index, railTab], async () => {
     await nextTick()
     const container = queue.value
     const item = container?.querySelector<HTMLElement>('[aria-current="true"]')
@@ -388,7 +577,7 @@ watch(index, async () => {
 
 onMounted(() => document.addEventListener('fullscreenchange', updateFullscreen))
 onBeforeUnmount(() => {
-    stopCompatible()
+    unloadPlayback()
     window.clearTimeout(timer)
     document.removeEventListener('fullscreenchange', updateFullscreen)
 })
@@ -422,32 +611,49 @@ const supportsPip = document.pictureInPictureEnabled
 
             <div class="player-columns">
                 <div class="player-main">
-                    <div ref="stage" class="stage" tabindex="0" :aria-label="t('player')" role="region" @keydown="playerKeys">
+                    <div ref="stage" class="stage" :class="{'editing-chapter': editStart !== undefined}"
+                        tabindex="0" :aria-label="t('player')" role="region" @keydown="playerKeys">
                         <div class="picture" :class="{'audio-picture': audioLayout}">
-                            <video ref="video" :src="compatible ? undefined : src" playsinline preload="metadata"
+                            <video ref="video" :src="compatible ? undefined : src || undefined" playsinline preload="metadata"
                                 @click="togglePlayback" @durationchange="mediaTime" @timeupdate="mediaTime"
                                 @volumechange="mediaVolume" @play="playing = true" @pause="playing = false"
                                 @ended="ended" @loadeddata="onMediaData" @error="onMediaError"></video>
                             <div v-if="audioLayout" class="audio-art" aria-hidden="true"><Music2 :size="58" :stroke-width="1.3" /></div>
-                            <div v-if="preparing" class="play-error" role="status">
+                            <div v-if="mediaLoading" class="play-error" role="status">
+                                <LoaderCircle :size="28" /><strong>{{ t('preparingMedia') }}</strong>
+                            </div>
+                            <div v-else-if="mediaLoadFailed || failure === 'sourceChanged'" class="play-error" role="alert">
+                                <CircleAlert :size="32" /><strong>{{ t(mediaLoadFailed ? 'mediaLoadFailed' : 'sourceChanged') }}</strong>
+                                <button class="button" type="button" @click="reloadMedia">{{ t('retry') }}</button>
+                            </div>
+                            <div v-else-if="preparing" class="play-error" role="status">
                                 <LoaderCircle :size="28" /><strong>{{ t('preparingPlayback') }}</strong>
                             </div>
                             <div v-else-if="playbackBlocked" class="play-error" role="alert">
                                 <CircleAlert :size="32" /><strong>{{ t(failure ?? 'mediaError') }}</strong>
-                                <a class="button" :href="src" :download="current.name"><Download />{{ t('download') }}</a>
+                                <div class="play-error-actions">
+                                    <button class="button" type="button" @click="reloadMedia">{{ t('retry') }}</button>
+                                    <a class="button" :href="fileSource" :download="current.name"><Download />{{ t('download') }}</a>
+                                </div>
                             </div>
                             <button v-else-if="!playing" type="button" class="play-overlay" :aria-label="t('play')" @click="play">
                                 <Play :size="32" fill="currentColor" />
                             </button>
                         </div>
                         <div class="controls">
-                            <input class="seek" type="range" min="0" :max="duration || 1" step="0.05" :value="time"
-                                :disabled="!duration" :aria-label="t('seek')" :aria-valuetext="formatTime(time) + ' / ' + formatTime(duration)"
-                                @input="setTime">
+                            <div class="timeline" :class="{'has-chapters': chapterSegments.length}">
+                                <div v-if="chapterSegments.length" class="chapter-track" aria-hidden="true">
+                                    <span v-for="segment in chapterSegments" :key="segment.start"
+                                        :style="{width: segment.width, '--fill': segment.fill}"></span>
+                                </div>
+                                <input class="seek" type="range" min="0" :max="duration || 1" step="0.05" :value="time"
+                                    :disabled="!duration" :aria-label="t('seek')" :aria-valuetext="formatTime(time) + ' / ' + formatTime(duration)"
+                                    @input="setTime">
+                            </div>
                             <div class="control-row">
                                 <button class="control" type="button" :disabled="index <= 0" :aria-label="t('previous')"
                                     :title="t('previous')" @click="select(index - 1)"><SkipBack :size="19" fill="currentColor" /></button>
-                                <button class="control primary-control" type="button" :disabled="playbackBlocked"
+                                <button class="control primary-control" type="button" :disabled="!src || playbackBlocked"
                                     :aria-label="t(playing ? 'pause' : 'play')" :title="t(playing ? 'pause' : 'play')" @click="togglePlayback">
                                     <component :is="playing ? Pause : Play" :size="19" fill="currentColor" />
                                 </button>
@@ -475,6 +681,105 @@ const supportsPip = document.pictureInPictureEnabled
                                 </button>
                             </div>
                         </div>
+                        <div v-if="chapters.length || canWrite || chapterIssue" class="chapter-toolbar">
+                            <button class="chapter-tool chapter-picker-button" type="button" aria-haspopup="dialog"
+                                @click="openChapterPicker">
+                                <ListTree :size="17" />
+                                <span>{{ t('chapters') }}</span>
+                                <span v-if="chapters.length" class="chapter-count" aria-hidden="true">{{ chapters.length }}</span>
+                            </button>
+                            <span v-if="currentChapter" class="chapter-current">{{ chapterTitle(currentChapter, activeChapter) }}</span>
+                            <button v-if="canWrite" class="chapter-tool split-tool" type="button" :disabled="!canSplit"
+                                aria-keyshortcuts="C" :title="t('chapterSplit') + ' (C)'" @click="splitChapter">
+                                <Scissors :size="16" />{{ t(chapterSaving ? 'chapterSaving' : 'chapterSplit') }}
+                            </button>
+                        </div>
+                        <div v-if="chapterNotice || chapterIssue" class="chapter-feedback" role="status">
+                            <span v-if="chapterNotice">{{ t(chapterNotice.key, {time: chapterNotice.time}) }}</span>
+                            <span v-else-if="chapterIssue">{{ t(chapterIssue) }}</span>
+                            <button v-if="chapterIssue === 'chapterConflict' || chapterIssue === 'chapterLoadFailed'" class="chapter-tool"
+                                type="button" @click="retryChapters">{{ t('chapterReload') }}</button>
+                        </div>
+
+                        <dialog ref="chapterPicker" class="chapter-dialog chapter-picker" aria-labelledby="chapter-picker-title"
+                            @click.self="chapterPicker?.close()" @close="pickerOpen = !!chapterPicker?.open">
+                            <div class="chapter-dialog-body">
+                                <header class="chapter-dialog-heading">
+                                    <h2 id="chapter-picker-title"><ListTree :size="19" />{{ t('chapters') }}</h2>
+                                    <button class="control" type="button" :aria-label="t('chapterClose')" @click="chapterPicker?.close()">
+                                        <X :size="19" />
+                                    </button>
+                                </header>
+                                <ChapterList v-if="pickerOpen" :chapters="chapters" :active="activeChapter" :duration="duration"
+                                    :editable="canEditChapters && !chapterSaving" :loading="chapterLoading"
+                                    @select="selectChapter" @edit="openChapterEditor" />
+                                <div v-if="chapterNotice || chapterIssue" class="chapter-feedback" role="status">
+                                    <span v-if="chapterNotice">{{ t(chapterNotice.key, {time: chapterNotice.time}) }}</span>
+                                    <span v-else-if="chapterIssue">{{ t(chapterIssue) }}</span>
+                                    <button v-if="chapterIssue === 'chapterConflict' || chapterIssue === 'chapterLoadFailed'" class="chapter-tool"
+                                        type="button" @click="retryChapters">{{ t('chapterReload') }}</button>
+                                </div>
+                                <footer v-if="canWrite" class="chapter-picker-footer">
+                                    <button class="button" type="button" :disabled="!canSplit" @click="splitChapter">
+                                        <Scissors :size="16" />{{ t(chapterSaving ? 'chapterSaving' : 'chapterSplit') }}
+                                    </button>
+                                </footer>
+                            </div>
+                        </dialog>
+
+                        <form v-if="editStart !== undefined" ref="chapterEditor" class="chapter-editor"
+                            tabindex="-1" aria-labelledby="chapter-editor-title" @submit.prevent="saveChapterEdit"
+                            @keydown.esc.stop.prevent="cancelChapterEdit">
+                            <header class="chapter-dialog-heading">
+                                <div class="chapter-editor-heading">
+                                    <h2 id="chapter-editor-title">{{ t('chapterEdit') }}</h2>
+                                    <span>{{ t('chapterOriginalStart', {time: chapterTime(editStart)}) }}</span>
+                                </div>
+                                <div class="chapter-editor-commands">
+                                    <button v-if="chapterIssue === 'chapterConflict'" class="button" type="button"
+                                        @click="retryChapters">{{ t('chapterReload') }}</button>
+                                    <button v-else class="button primary" type="submit" :disabled="chapterSaving">
+                                        {{ t(chapterSaving ? 'chapterSaving' : 'chapterSave') }}
+                                    </button>
+                                    <button class="control" type="button" :aria-label="t('chapterClose')" :disabled="chapterSaving"
+                                        @click="cancelChapterEdit">
+                                        <X :size="19" />
+                                    </button>
+                                </div>
+                            </header>
+                            <fieldset class="chapter-edit-fields" :disabled="chapterSaving || chapterIssue === 'chapterConflict'">
+                                <label for="chapter-edit-time">{{ t('chapterStart') }}</label>
+                                <div class="chapter-adjust" :class="{'fixed-cut': editStart === 0}">
+                                    <template v-for="(delta, index) in editSteps" :key="delta">
+                                        <input v-if="index === 2" id="chapter-edit-time" v-model="editTime" type="text"
+                                            :readonly="editStart === 0" placeholder="1:23.500" @input="editIssue = undefined">
+                                        <button v-if="editStart > 0" class="button chapter-step" type="button"
+                                            :aria-label="t(delta < 0 ? 'chapterEarlier' : 'chapterLater', {seconds: Math.abs(delta) / 1000})"
+                                            :disabled="!canSeek || !validCut(editDraft + delta, otherChapters)" @click="nudgeCut(delta)">
+                                            {{ delta < 0 ? '−' : '+' }}{{ Math.abs(delta) / 1000 }}
+                                        </button>
+                                    </template>
+                                </div>
+                                <div v-if="editStart > 0" class="chapter-time-actions">
+                                    <button class="button quiet" type="button" :disabled="!canPreviewCut" @click="previewCut">
+                                        <Crosshair :size="16" />{{ t('chapterPreviewCut') }}
+                                    </button>
+                                    <button class="button quiet" type="button" :disabled="!canUsePlayhead" @click="usePlayhead">
+                                        {{ t('chapterUsePlayhead') }}
+                                    </button>
+                                </div>
+                                <label for="chapter-edit-name">{{ t('chapterTitle') }}</label>
+                                <input id="chapter-edit-name" v-model="editTitle" :maxlength="maxChapterTitle * 2" type="text"
+                                    :placeholder="t('chapterNumber', {number: editIndex + 1})">
+                            </fieldset>
+                            <p v-if="editIssue || chapterIssue" class="chapter-feedback" role="alert">{{ t(editIssue ?? chapterIssue!) }}</p>
+                            <div v-if="editStart > 0 || chapters.length === 1" class="chapter-edit-actions">
+                                <button class="button quiet" type="button"
+                                    :disabled="chapterSaving || chapterIssue === 'chapterConflict'" @click="removeChapter">
+                                    {{ t(editStart > 0 ? 'chapterMerge' : 'chapterRemove') }}
+                                </button>
+                            </div>
+                        </form>
                     </div>
 
                     <div class="play-preferences">
@@ -503,13 +808,21 @@ const supportsPip = document.pictureInPictureEnabled
                     <p v-if="failure && !playbackBlocked" class="play-notice" role="status">{{ t(failure) }}</p>
                 </div>
 
-                <aside class="queue" aria-labelledby="queue-title">
+                <aside class="queue" :aria-label="t(railTab)">
                     <header class="queue-heading">
-                        <span class="queue-icon"><ListVideo :size="21" /></span>
-                        <div><h2 id="queue-title">{{ t('queue') }}</h2><p>{{ t('queueCount', playlist.length) }}</p></div>
-                        <span class="queue-progress">{{ index + 1 }} / {{ playlist.length }}</span>
+                        <button class="rail-tab" type="button" :aria-pressed="railTab === 'queue'" @click="chosenTab = 'queue'">
+                            <ListVideo :size="17" />{{ t('queue') }}
+                        </button>
+                        <button class="rail-tab" type="button" :aria-pressed="railTab === 'chapters'" @click="chosenTab = 'chapters'">
+                            <ListTree :size="17" />{{ t('chapters') }}
+                        </button>
+                        <span v-if="railTab === 'queue'" class="queue-progress">{{ index + 1 }} / {{ playlist.length }}</span>
+                        <span v-else-if="chapters.length" class="queue-progress">{{ chapters.length }}</span>
                     </header>
-                    <ol ref="queue" class="queue-items">
+                    <ChapterList v-if="railTab === 'chapters'" class="queue-items" :chapters="chapters"
+                        :active="activeChapter" :duration="duration" :editable="canEditChapters && !chapterSaving"
+                        :loading="chapterLoading" @select="selectChapter" @edit="openChapterEditor" />
+                    <ol v-else ref="queue" class="queue-items">
                         <li v-for="(item, position) in playlist" :key="item.name">
                             <RouterLink class="queue-link" :class="{'current-item': position === index}" replace
                                 :aria-current="position === index ? 'true' : undefined"
@@ -557,11 +870,21 @@ const supportsPip = document.pictureInPictureEnabled
 .play-overlay:hover { background: var(--accent); color: #221517; }
 .play-error { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 11px; padding: 10px; background: #08090de8; text-align: center; }
 .play-error > svg { color: var(--accent); }
+.play-error-actions { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; }
 .play-notice { color: var(--muted); font-size: 12px; }
 
 .controls { padding: 3px 12px 7px; background: #191c23; }
 .seek, .volume { display: block; margin: 0; accent-color: var(--accent); cursor: pointer; }
 .seek { width: 100%; height: 17px; }
+.timeline { position: relative; display: grid; align-items: center; min-height: 22px; }
+.chapter-track { position: absolute; inset-inline: 6px; display: flex; height: 5px; pointer-events: none; }
+.chapter-track span { min-width: 0; border-radius: 3px; background: linear-gradient(to right, var(--accent) var(--fill), #494e5c var(--fill)); }
+.chapter-track span:not(:last-child) { box-shadow: inset -2px 0 #191c23; }
+.has-chapters .seek { position: relative; appearance: none; background: transparent; }
+.has-chapters .seek::-webkit-slider-runnable-track { height: 14px; background: none; }
+.has-chapters .seek::-moz-range-track { height: 14px; background: none; }
+.has-chapters .seek::-webkit-slider-thumb { appearance: none; width: 13px; height: 13px; border: 2px solid #191c23; border-radius: 50%; background: var(--accent); }
+.has-chapters .seek::-moz-range-thumb { width: 10px; height: 10px; border: 2px solid #191c23; border-radius: 50%; background: var(--accent); }
 .control-row { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .control { display: grid; place-items: center; width: 34px; height: 34px; padding: 0; border: 0; border-radius: 6px; background: none; color: var(--text); }
 .control:hover:not(:disabled), .speed:hover { background: var(--raised); }
@@ -572,7 +895,47 @@ const supportsPip = document.pictureInPictureEnabled
 .volume { width: clamp(35px, 5vw, 68px); }
 .speed { min-height: 31px; padding: 0 4px; border: 0; border-radius: 6px; background: transparent; color: var(--text); font-size: 12px; }
 .stage:fullscreen { border: 0; border-radius: 0; }
-.stage:fullscreen .picture { flex: 1; aspect-ratio: auto; }
+.stage:fullscreen .picture { flex: 1; min-height: 0; aspect-ratio: auto; }
+.stage.editing-chapter { scroll-margin-top: 68px; }
+.editing-chapter:not(:fullscreen) .picture { max-height: 34dvh; }
+
+.chapter-toolbar { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 4px 12px; border-top: 1px solid var(--border); background: #191c23; }
+.chapter-tool { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 9px; border: 0; border-radius: 6px; background: transparent; color: var(--text); font-size: 12px; font-weight: 600; white-space: nowrap; }
+.chapter-tool:hover:not(:disabled) { background: var(--raised); }
+.chapter-tool svg { color: var(--accent); }
+.chapter-count { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.chapter-current { min-width: 0; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.split-tool { margin-left: auto; background: var(--accent-soft); color: var(--accent); }
+.split-tool:hover:not(:disabled) { background: #ff796b30; }
+.chapter-feedback { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 4px 13px 7px; color: var(--accent); font-size: 12px; line-height: 1.5; }
+.chapter-feedback .chapter-tool { min-height: 28px; }
+.chapter-dialog { width: min(420px, calc(100% - 24px)); max-height: min(520px, 85dvh); padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: var(--panel); color: var(--text); box-shadow: 0 18px 70px #0008; }
+.chapter-dialog::backdrop { background: #07090cac; }
+.chapter-dialog-body { display: flex; flex-direction: column; max-height: min(518px, calc(85dvh - 2px)); }
+.chapter-dialog-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.chapter-dialog-heading h2 { display: flex; align-items: center; gap: 8px; font-size: 16px; }
+.chapter-dialog-heading h2 svg { color: var(--accent); }
+.chapter-picker-footer { display: flex; justify-content: flex-end; padding: 10px 12px; border-top: 1px solid var(--border); }
+.chapter-editor { flex: 0 0 auto; max-height: 46dvh; overflow: auto; border-top: 1px solid var(--border); background: var(--panel); }
+.chapter-editor:focus { outline: none; }
+.chapter-editor .chapter-dialog-heading { position: sticky; top: 0; z-index: 1; background: var(--panel); }
+.chapter-editor-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 9px; }
+.chapter-editor-heading span { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.chapter-editor-commands { display: flex; align-items: center; gap: 3px; }
+.chapter-editor-commands .button { padding-inline: 10px; }
+.chapter-edit-fields { display: grid; gap: 7px; min-inline-size: 0; margin: 0; padding: 10px 12px; border: 0; }
+.chapter-editor label { color: var(--muted); font-size: 12px; }
+.chapter-editor input { min-width: 0; min-height: 40px; padding: 0 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); }
+.chapter-editor input[readonly] { color: var(--muted); }
+.chapter-adjust { display: grid; grid-template-columns: repeat(2, minmax(44px, 1fr)) minmax(70px, 2fr) repeat(2, minmax(44px, 1fr)); gap: 5px; max-width: 395px; }
+.chapter-adjust.fixed-cut { grid-template-columns: minmax(0, 125px); }
+.chapter-adjust input { text-align: center; font-variant-numeric: tabular-nums; }
+.chapter-step { min-height: 44px; padding: 0 3px; font-variant-numeric: tabular-nums; }
+.chapter-time-actions { display: flex; flex-wrap: wrap; gap: 5px; padding-bottom: 3px; }
+.chapter-time-actions .button { min-height: 36px; padding-inline: 8px; }
+.chapter-editor .chapter-feedback { padding-top: 8px; }
+.chapter-edit-actions { padding: 0 12px 10px; }
+.stage:fullscreen .chapter-editor { max-height: 48dvh; }
 
 .play-preferences { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
 .play-pref { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
@@ -580,12 +943,12 @@ const supportsPip = document.pictureInPictureEnabled
 .play-pref svg { color: var(--accent); }
 
 .queue { position: relative; min-height: 315px; overflow: hidden; border: 1px solid var(--border); border-radius: 13px; background: var(--rail); }
-.queue-heading { display: flex; align-items: center; gap: 10px; height: 69px; padding: 11px 13px; border-bottom: 1px solid var(--border); }
-.queue-icon { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); }
-.queue-heading h2 { font-size: 16px; font-weight: 680; }
-.queue-heading p { margin-top: 4px; color: var(--muted); font-size: 12px; }
+.queue-heading { display: flex; align-items: center; gap: 5px; height: 55px; padding: 7px 8px; border-bottom: 1px solid var(--border); }
+.rail-tab { display: flex; align-items: center; gap: 6px; min-height: 38px; padding: 0 8px; border: 1px solid transparent; border-radius: 7px; background: none; color: var(--muted); font-size: 12px; font-weight: 630; white-space: nowrap; }
+.rail-tab:hover { background: var(--hover); color: var(--text); }
+.rail-tab[aria-pressed="true"] { border-color: #ff796b30; background: var(--accent-soft); color: var(--accent); }
 .queue-progress { margin-left: auto; padding: 4px 7px; border-radius: 5px; background: var(--raised); color: var(--muted); font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.queue-items { position: absolute; inset: 69px 0 0; overflow: auto; overscroll-behavior: contain; margin: 0; padding: 8px; list-style: none; scrollbar-width: thin; }
+.queue-items { position: absolute; inset: 55px 0 0; overflow: auto; overscroll-behavior: contain; margin: 0; padding: 8px; list-style: none; scrollbar-width: thin; }
 .queue-link { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 7px; border: 1px solid transparent; border-radius: 8px; }
 .queue-link:hover { background: var(--hover); }
 .queue-link.current-item { border-color: #ff796b4d; background: var(--accent-soft); }
@@ -611,5 +974,11 @@ const supportsPip = document.pictureInPictureEnabled
     .volume, .pip { display: none; }
     .speed { padding-inline: 2px; }
     .queue-cover { flex-basis: 91px; }
+    .chapter-toolbar { padding-inline: 7px; }
+    .chapter-tool { min-height: 40px; }
+    .chapter-picker { inset: auto 0 0; width: 100%; max-width: none; margin: 0; border-radius: 15px 15px 0 0; }
+    .chapter-picker-footer { padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+    .chapter-edit-fields, .chapter-edit-actions { padding-inline: 8px; }
+    .chapter-editor input { font-size: 16px; padding-inline: 5px; }
 }
 </style>

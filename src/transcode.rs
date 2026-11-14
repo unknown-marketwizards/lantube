@@ -4,11 +4,14 @@ mod plan;
 mod timeline;
 mod tools;
 
-pub use access::MediaAccess;
+pub use access::{MediaAccess, ReadLease};
 pub use tools::MediaTools;
 
-use crate::{AppState, error::AppError, library::resolve_file};
-use access::ReadLease;
+use crate::{
+    AppState,
+    error::AppError,
+    library::{check_revision, file_revision, require_revision, resolve_file},
+};
 use audio::{add_audio_input, audio_slice};
 use axum::{
     body::Body,
@@ -19,16 +22,9 @@ use axum::{
 use futures_util::stream;
 use plan::PlaybackPlan;
 use serde::Deserialize;
-use std::{
-    convert::Infallible,
-    fmt::Write,
-    future::Future,
-    hash::{DefaultHasher, Hash, Hasher},
-    path::Path,
-    time::Duration,
-};
-use timeline::{Segment, playback_timeline, thumbnail_timing};
-use tokio::{fs, sync::Semaphore, time::timeout};
+use std::{convert::Infallible, fmt::Write, future::Future, path::Path, time::Duration};
+use timeline::{Segment, chapter_duration, playback_timeline, thumbnail_timing};
+use tokio::{sync::Semaphore, time::timeout};
 use tools::{ffmpeg, ffmpeg_command, run, run_with_audio};
 
 const FRAME_RATE: u32 = 30;
@@ -40,11 +36,13 @@ const AUDIO_FILTER: &str = "aresample=async=1:first_pts=0,apad";
 
 static PLAYBACK_SLOTS: Semaphore = Semaphore::const_new(2);
 static THUMBNAIL_SLOTS: Semaphore = Semaphore::const_new(1);
+static CHAPTER_PROBE_SLOTS: Semaphore = Semaphore::const_new(1);
 
 #[derive(Deserialize)]
 pub struct PlaybackQuery {
     segment: Option<u32>,
     plan: Option<String>,
+    revision: Option<u64>,
 }
 
 pub async fn playback(
@@ -53,7 +51,7 @@ pub async fn playback(
     Query(query): Query<PlaybackQuery>,
     method: Method,
 ) -> Result<Response, AppError> {
-    let input = resolve_file(&state.data, &path).await?;
+    let input = resolve_file(&state, &path).await?;
     let read = state.media.read(&input)?;
     if let Some(index) = query.segment {
         let token = query
@@ -78,6 +76,9 @@ pub async fn playback(
     }
 
     let revision = file_revision(&input).await?;
+    if let Some(expected) = query.revision {
+        require_revision(revision, expected)?;
+    }
     let timeline = with_media_slot(
         &PLAYBACK_SLOTS,
         playback_timeline(&state.tools, &input, method, &read),
@@ -247,7 +248,7 @@ pub async fn thumbnail(
     State(state): State<AppState>,
     RoutePath(path): RoutePath<String>,
 ) -> Result<Response, AppError> {
-    let input = resolve_file(&state.data, &path).await?;
+    let input = resolve_file(&state, &path).await?;
     let read = state.media.read(&input)?;
     let revision = file_revision(&input).await?;
     let (bytes, duration) = with_media_slot(&THUMBNAIL_SLOTS, async {
@@ -302,25 +303,12 @@ pub async fn thumbnail(
     Ok(response)
 }
 
-async fn file_revision(path: &Path) -> Result<u64, AppError> {
-    let metadata = fs::metadata(path).await?;
-    let mut revision = DefaultHasher::new();
-    metadata.modified()?.hash(&mut revision);
-    metadata.len().hash(&mut revision);
-    metadata.created().ok().hash(&mut revision);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        metadata.ino().hash(&mut revision);
-    }
-    Ok(revision.finish())
-}
-
-async fn check_revision(path: &Path, expected: u64) -> Result<(), AppError> {
-    if file_revision(path).await? != expected {
-        return Err(AppError::new(StatusCode::CONFLICT, "Media file changed"));
-    }
-    Ok(())
+pub async fn probe_chapter_duration(
+    tools: &MediaTools,
+    input: &Path,
+    read: &ReadLease,
+) -> Result<f64, AppError> {
+    with_media_slot(&CHAPTER_PROBE_SLOTS, chapter_duration(tools, input, read)).await
 }
 
 fn hold_frames(scale: &str, start: f64) -> String {
@@ -346,6 +334,7 @@ async fn with_media_slot<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::fs;
 
     #[tokio::test]
     async fn rejects_a_segment_after_the_source_is_replaced() {
@@ -370,6 +359,7 @@ mod tests {
             Query(PlaybackQuery {
                 segment: Some(0),
                 plan: Some(plan.encode(path).unwrap()),
+                revision: None,
             }),
             Method::GET,
         )

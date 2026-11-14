@@ -1,4 +1,5 @@
 mod auth;
+mod chapters;
 mod error;
 mod frontend;
 mod library;
@@ -10,7 +11,7 @@ use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::middleware;
-use axum::routing::{any, get, post};
+use axum::routing::{any, get, post, put};
 use serde::Deserialize;
 use tokio::fs;
 use tower_http::trace::TraceLayer;
@@ -45,6 +46,7 @@ struct AppState {
     data: HashMap<String, PathBuf>,
     tools: transcode::MediaTools,
     media: Arc<transcode::MediaAccess>,
+    chapters: Arc<chapters::ChapterStore>,
 }
 
 #[tokio::main]
@@ -53,7 +55,23 @@ async fn main() -> Result<()> {
     let executable_dir = executable
         .parent()
         .expect("executable must have a parent directory");
-    let config = load_config(&env::current_dir()?, executable_dir).await?;
+    let working_dir = env::current_dir()?;
+    let (app, addr) = load_app(&working_dir, executable_dir).await?;
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("Could not listen on {addr}"))?;
+    println!("LanTube listening on http://{}", listener.local_addr()?);
+    axum::serve(listener, app.layer(TraceLayer::new_for_http())).await?;
+    Ok(())
+}
+
+async fn load_app(working_dir: &Path, executable_dir: &Path) -> Result<(Router, SocketAddr)> {
+    let config = load_config(working_dir, executable_dir).await?;
+    let chapter_directory = working_dir.join("data/chapters");
+    let chapters =
+        tokio::task::spawn_blocking(move || chapters::ChapterStore::open(&chapter_directory))
+            .await?
+            .context("Could not resolve the chapter storage directory")?;
     let auth = config
         .auth
         .map(auth::AuthConfig::build)
@@ -63,21 +81,16 @@ async fn main() -> Result<()> {
         tools: transcode::MediaTools::from_path(&config.data),
         data: config.data,
         media: Arc::default(),
+        chapters: Arc::new(chapters),
     };
     state.media.audio.start_reaper();
-    let app = router(state, auth);
-
-    let listener = tokio::net::TcpListener::bind(config.server.addr)
-        .await
-        .with_context(|| format!("Could not listen on {}", config.server.addr))?;
-    println!("LanTube listening on http://{}", listener.local_addr()?);
-    axum::serve(listener, app.layer(TraceLayer::new_for_http())).await?;
-    Ok(())
+    Ok((router(state, auth), config.server.addr))
 }
 
 fn router(state: AppState, auth: auth::Auth) -> Router {
     let writes = Router::new()
         .route("/api/mkdir", post(library::mkdir))
+        .route("/api/chapters", put(chapters::save))
         .route(
             "/api/upload",
             post(upload::upload).layer(DefaultBodyLimit::max(
@@ -95,6 +108,7 @@ fn router(state: AppState, auth: auth::Auth) -> Router {
         )
         .route("/api/transcode/{*path}", get(transcode::playback))
         .route("/api/thumbnail/{*path}", get(transcode::thumbnail))
+        .route("/api/chapters", get(chapters::load))
         .merge(writes)
         .route("/file/", any(|| async { StatusCode::NOT_FOUND }))
         .nest(
@@ -209,6 +223,233 @@ mod tests {
 
     const CONFIG: &str = "[data]\nmedia = 'clips'\n[server]\naddr = '127.0.0.1:9999'\n";
     const AUTH: &str = "[auth.users.reader]\npassword = 'test-only'\n";
+
+    fn explorer_request(path: &str) -> Request<Body> {
+        Request::post("/api/explorer")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::json!({"path": path}).to_string()))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn offline_media_root_does_not_block_startup_or_other_roots() {
+        let work = tempfile::tempdir().unwrap();
+        let root = work.path();
+        let online = root.join("clips");
+        fs::create_dir(&online).await.unwrap();
+        fs::write(online.join("clip.mp4"), b"video").await.unwrap();
+
+        #[cfg(windows)]
+        let offline = {
+            let drive = ('D'..='Z')
+                .map(|letter| PathBuf::from(format!("{letter}:\\")))
+                .find(|drive| {
+                    std::fs::symlink_metadata(drive)
+                        .is_err_and(|err| err.kind() == ErrorKind::NotFound)
+                })
+                .expect("need an unmounted drive letter for this test");
+            drive.join("clips")
+        };
+        #[cfg(unix)]
+        let offline = {
+            let link = root.join("offline");
+            std::os::unix::fs::symlink(root.join("unavailable"), &link).unwrap();
+            link
+        };
+        fs::write(
+            root.join("config.toml"),
+            CONFIG.replace(
+                "media = 'clips'",
+                &format!("media = 'clips'\noffline = '{}'", offline.display()),
+            ),
+        )
+        .await
+        .unwrap();
+
+        let (app, addr) = load_app(root, root).await.unwrap();
+        assert_eq!(addr, (Ipv4Addr::LOCALHOST, 9999).into());
+        let response = app.clone().oneshot(explorer_request("/")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let roots: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            roots
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["name"] == "offline")
+        );
+
+        let response = app
+            .clone()
+            .oneshot(explorer_request("/offline"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let response = app
+            .oneshot(
+                Request::get("/file/media/clip.mp4")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"video");
+    }
+
+    #[tokio::test]
+    async fn rejects_media_roots_that_overlap_chapter_storage() {
+        let work = tempfile::tempdir().unwrap();
+        let root = work.path();
+        fs::create_dir_all(root.join("data/chapters/nested"))
+            .await
+            .unwrap();
+        fs::create_dir(root.join("data/media")).await.unwrap();
+        for path in ["data", "data/chapters", "data/chapters/nested"] {
+            fs::write(
+                root.join("config.toml"),
+                CONFIG.replace("'clips'", &format!("'{path}'")),
+            )
+            .await
+            .unwrap();
+            let (app, _) = load_app(root, root).await.unwrap();
+            let response = app.oneshot(explorer_request("/media")).await.unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
+        }
+        fs::write(
+            root.join("config.toml"),
+            CONFIG.replace("'clips'", "'data/media'"),
+        )
+        .await
+        .unwrap();
+        let (app, _) = load_app(root, root).await.unwrap();
+        let response = app.oneshot(explorer_request("/media")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rejects_a_chapter_storage_symlink_into_a_media_root() {
+        let work = tempfile::tempdir().unwrap();
+        let root = work.path();
+        fs::create_dir_all(root.join("share/metadata"))
+            .await
+            .unwrap();
+        fs::create_dir(root.join("data")).await.unwrap();
+        std::os::unix::fs::symlink(root.join("share/metadata"), root.join("data/chapters"))
+            .unwrap();
+        fs::write(
+            root.join("config.toml"),
+            CONFIG.replace("'clips'", "'share'"),
+        )
+        .await
+        .unwrap();
+        let (app, _) = load_app(root, root).await.unwrap();
+        let response = app.oneshot(explorer_request("/media")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn checks_for_overlap_when_an_offline_media_root_becomes_accessible() {
+        let work = tempfile::tempdir().unwrap();
+        let root = work.path();
+        let storage = root.join("data/chapters");
+        fs::create_dir_all(&storage).await.unwrap();
+        fs::write(storage.join("record.json"), b"private")
+            .await
+            .unwrap();
+        fs::write(
+            root.join("config.toml"),
+            CONFIG.replace("'clips'", "'late-root'"),
+        )
+        .await
+        .unwrap();
+        let (app, _) = load_app(root, root).await.unwrap();
+        let response = app
+            .clone()
+            .oneshot(explorer_request("/media"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        std::os::unix::fs::symlink(&storage, root.join("late-root")).unwrap();
+        let response = app
+            .oneshot(
+                Request::get("/file/media/record.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn chapter_requests_refuse_storage_redirected_after_startup() {
+        let work = tempfile::tempdir().unwrap();
+        let root = work.path();
+        let share = root.join("clips");
+        fs::create_dir(&share).await.unwrap();
+        let video = share.join("clip.mp4");
+        fs::write(&video, b"video").await.unwrap();
+        fs::write(root.join("config.toml"), CONFIG).await.unwrap();
+        let (app, _) = load_app(root, root).await.unwrap();
+        let revision = library::file_revision(&video).await.unwrap().to_string();
+        let load = || {
+            Request::get(format!(
+                "/api/chapters?path=%2Fmedia%2Fclip.mp4&revision={revision}"
+            ))
+            .body(Body::empty())
+            .unwrap()
+        };
+        let response = app.clone().oneshot(load()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let initial: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let update = serde_json::json!({
+            "path": "/media/clip.mp4",
+            "revision": revision,
+            "version": initial["version"],
+            "chapters": [{"startMs": 0, "title": "Intro"}],
+        });
+        let save = || {
+            Request::put("/api/chapters")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(update.to_string()))
+                .unwrap()
+        };
+
+        let data = root.join("data");
+        assert!(!data.exists());
+        std::os::unix::fs::symlink(&share, &data).unwrap();
+        let response = app.clone().oneshot(save()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let response = app.clone().oneshot(load()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(!share.join("chapters").exists());
+
+        fs::remove_file(&data).await.unwrap();
+        let response = app.clone().oneshot(save()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = app.oneshot(load()).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(saved["chapters"][0]["title"], "Intro");
+        assert!(data.join("chapters").exists());
+        assert!(!share.join("chapters").exists());
+    }
 
     #[tokio::test]
     async fn defaults_to_localhost_and_uses_share_beside_the_binary() {
@@ -356,6 +597,192 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_playback_revision_is_rejected_by_media_and_chapter_routes() {
+        let directory = tempfile::tempdir().unwrap();
+        let share = directory.path().join("share");
+        fs::create_dir(&share).await.unwrap();
+        let file = share.join("clip.mp4");
+        fs::write(&file, b"original").await.unwrap();
+        let app = router(
+            AppState {
+                data: HashMap::from([("share".into(), share)]),
+                chapters: Arc::new(
+                    chapters::ChapterStore::open(&directory.path().join("chapters")).unwrap(),
+                ),
+                ..Default::default()
+            },
+            auth::Auth::default(),
+        );
+        let request = |method, path: String| {
+            Request::builder()
+                .method(method)
+                .uri(path)
+                .body(Body::empty())
+                .unwrap()
+        };
+        let request_revision = || async {
+            let response = app
+                .clone()
+                .oneshot(request("HEAD", "/file/share/clip.mp4".into()))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            response.headers()["x-media-revision"]
+                .to_str()
+                .unwrap()
+                .to_owned()
+        };
+        let old = request_revision().await;
+        let chapter_url = "/api/chapters?path=%2Fshare%2Fclip.mp4&revision=";
+        let raw_url = format!("/file/share/clip.mp4?revision={old}");
+        let media = app
+            .clone()
+            .oneshot(request("GET", raw_url.clone()))
+            .await
+            .unwrap();
+        assert_eq!(media.status(), StatusCode::OK);
+        drop(media);
+        fs::write(&file, b"replacement").await.unwrap();
+
+        for (method, path) in [
+            ("GET", raw_url),
+            ("GET", format!("{chapter_url}{old}")),
+            (
+                "HEAD",
+                format!("/api/transcode/share/clip.mp4?revision={old}"),
+            ),
+        ] {
+            let response = app.clone().oneshot(request(method, path)).await.unwrap();
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+        }
+        let fresh = request_revision().await;
+        assert_ne!(fresh, old);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/file/share/clip.mp4?revision={fresh}"))
+                    .header(header::RANGE, "bytes=0-3")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"repl");
+        let response = app
+            .clone()
+            .oneshot(request("GET", format!("{chapter_url}{fresh}")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let update = serde_json::json!({
+            "path": "/share/clip.mp4",
+            "revision": old,
+            "version": saved["version"],
+            "chapters": [{"startMs": 0, "title": "Old picture"}],
+        });
+        let response = app
+            .oneshot(
+                Request::put("/api/chapters")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(update.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(!directory.path().join("chapters").exists());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires ffprobe on PATH"]
+    async fn chapter_api_rejects_out_of_range_cuts_for_real_media() {
+        let directory = tempfile::tempdir().unwrap();
+        let share = directory.path().join("share");
+        fs::create_dir(&share).await.unwrap();
+        let mut wav = Vec::new();
+        let data_len = 80_000_u32;
+        // 单声道 8-bit PCM，8000 Hz，正好 10 秒。
+        wav.extend_from_slice(b"RIFF");
+        wav.extend((36 + data_len).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend(16_u32.to_le_bytes());
+        wav.extend(1_u16.to_le_bytes());
+        wav.extend(1_u16.to_le_bytes());
+        wav.extend(8000_u32.to_le_bytes());
+        wav.extend(8000_u32.to_le_bytes());
+        wav.extend(1_u16.to_le_bytes());
+        wav.extend(8_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend(data_len.to_le_bytes());
+        wav.resize(44 + data_len as usize, 128);
+        let file = share.join("clip.wav");
+        fs::write(&file, wav).await.unwrap();
+        let data = HashMap::from([("share".into(), share)]);
+        let app = router(
+            AppState {
+                tools: transcode::MediaTools::from_path(&data),
+                data,
+                chapters: Arc::new(
+                    chapters::ChapterStore::open(&directory.path().join("chapters")).unwrap(),
+                ),
+                ..Default::default()
+            },
+            auth::Auth::default(),
+        );
+        let revision = library::file_revision(&file).await.unwrap().to_string();
+        let read = || {
+            Request::get(format!(
+                "/api/chapters?path=%2Fshare%2Fclip.wav&revision={revision}"
+            ))
+            .body(Body::empty())
+            .unwrap()
+        };
+        let response = app.clone().oneshot(read()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let initial: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        for (time, expected) in [
+            (60_000, StatusCode::BAD_REQUEST),
+            (10_000, StatusCode::BAD_REQUEST),
+            (9_999, StatusCode::OK),
+        ] {
+            let update = serde_json::json!({
+                "path": "/share/clip.wav",
+                "revision": revision,
+                "version": initial["version"],
+                "chapters": [{"startMs": 0, "title": ""}, {"startMs": time, "title": "Cut"}],
+            });
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::put("/api/chapters")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(update.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected, "{time}");
+        }
+        let response = app.oneshot(read()).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(saved["chapters"][1]["startMs"], 9_999);
+    }
+
+    #[tokio::test]
     async fn authentication_covers_html_assets_and_all_media_routes() {
         let app = router(AppState::default(), configured_auth());
         for (method, path) in [
@@ -364,6 +791,8 @@ mod tests {
             ("POST", "/api/explorer"),
             ("POST", "/api/upload"),
             ("POST", "/api/mkdir"),
+            ("GET", "/api/chapters?path=%2Fshare%2Fvideo.mp4"),
+            ("PUT", "/api/chapters"),
             ("GET", "/file/share/video.mp4"),
             ("HEAD", "/file/share/video.mp4"),
             ("GET", "/api/thumbnail/share/video.mp4"),
@@ -389,6 +818,79 @@ mod tests {
             );
             assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
         }
+    }
+
+    #[tokio::test]
+    async fn viewers_can_read_chapters_and_only_editors_can_save_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let share = directory.path().join("share");
+        fs::create_dir(&share).await.unwrap();
+        fs::write(share.join("test.mp4"), b"sample").await.unwrap();
+        let app = router(
+            AppState {
+                data: HashMap::from([("share".into(), share)]),
+                chapters: Arc::new(
+                    chapters::ChapterStore::open(&directory.path().join("chapters")).unwrap(),
+                ),
+                ..Default::default()
+            },
+            configured_auth(),
+        );
+        let revision = library::file_revision(&directory.path().join("share/test.mp4"))
+            .await
+            .unwrap()
+            .to_string();
+        let read = || {
+            Request::get(format!(
+                "/api/chapters?path=%2Fshare%2Ftest.mp4&revision={revision}"
+            ))
+            .header(
+                header::AUTHORIZATION,
+                format!("Basic {}", STANDARD.encode("reader:read:only")),
+            )
+            .body(Body::empty())
+            .unwrap()
+        };
+        let response = app.clone().oneshot(read()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let version: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        for (credentials, write_header, status) in [
+            ("reader:read:only", true, StatusCode::FORBIDDEN),
+            ("operator:write", false, StatusCode::FORBIDDEN),
+            ("operator:write", true, StatusCode::OK),
+        ] {
+            let mut request = Request::put("/api/chapters")
+                .header(
+                    header::AUTHORIZATION,
+                    format!("Basic {}", STANDARD.encode(credentials)),
+                )
+                .header(header::CONTENT_TYPE, "application/json");
+            if write_header {
+                request = request.header("x-lantube-write", "1");
+            }
+            let body = serde_json::json!({
+                "path": "/share/test.mp4",
+                "version": version["version"],
+                "revision": revision,
+                "chapters": [{"startMs": 0, "title": "Intro"}],
+            });
+            let response = app
+                .clone()
+                .oneshot(request.body(Body::from(body.to_string())).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), status);
+        }
+        let response = app.oneshot(read()).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(saved["chapters"][0]["title"], "Intro");
     }
 
     #[tokio::test]

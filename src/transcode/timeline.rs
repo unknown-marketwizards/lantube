@@ -74,6 +74,41 @@ pub async fn thumbnail_timing(
     Ok(ThumbnailTiming { seek, duration })
 }
 
+pub async fn chapter_duration(
+    tools: &MediaTools,
+    input: &Path,
+    read: &ReadLease,
+) -> Result<f64, AppError> {
+    let probe = probe_media(tools, input, read).await?;
+    let duration = if let Ok(video) = probe.video() {
+        // 切点必须落在兼容播放实际使用的轨道范围内。
+        build_playback_timeline(tools, input, Method::GET, read, &probe, video)
+            .await?
+            .map(|timeline| timeline.rounded_duration())
+    } else if let Some((_, audio)) = probe.audio() {
+        if let Some(end) = probe.timing(audio, None).end {
+            Some(end)
+        } else {
+            let [packets, _] =
+                probe_packet_timing(tools, input, [Some(audio.index), None], None, read).await?;
+            packets
+                .end
+                .map(|end| end - probe.origin())
+                .or_else(|| probe.container_duration())
+        }
+    } else {
+        None
+    };
+    duration
+        .filter(|duration| duration.is_finite() && *duration > 0.0)
+        .ok_or_else(|| {
+            AppError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "Could not determine media duration",
+            )
+        })
+}
+
 impl PlaybackTimeline {
     fn rounded_duration(&self) -> f64 {
         (self.duration * 1_000_000.0).round() / 1_000_000.0
@@ -345,6 +380,17 @@ pub async fn playback_timeline(
     let probe = probe_media(tools, input, read).await?;
     let video = probe.video()?;
     tools.encoder()?;
+    build_playback_timeline(tools, input, method, read, &probe, video).await
+}
+
+async fn build_playback_timeline(
+    tools: &MediaTools,
+    input: &Path,
+    method: Method,
+    read: &ReadLease,
+    probe: &MediaProbe,
+    video: &ProbedStream,
+) -> Result<Option<PlaybackTimeline>, AppError> {
     let selected_audio = probe.audio();
     let audio = selected_audio.map(|(_, track)| track);
     let origin = probe.origin();
@@ -510,6 +556,123 @@ async fn probe_packet_timing(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires ffmpeg and ffprobe on PATH"]
+    async fn chapters_probe_packets_when_matroska_has_no_duration_metadata() {
+        use super::super::{access::MediaAccess, tools::ffmpeg_command};
+
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("live.mkv");
+        let tools = MediaTools::from_path(&HashMap::new());
+        let output = ffmpeg_command(&tools)
+            .unwrap()
+            .args([
+                "-f",
+                "lavfi",
+                "-i",
+                "color=size=32x32:rate=10",
+                "-t",
+                "2",
+                "-c:v",
+                "ffv1",
+                "-live",
+                "1",
+            ])
+            .arg(&input)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let access = MediaAccess::default();
+        let read = access.read(&input).unwrap();
+        let probe = probe_media(&tools, &input, &read).await.unwrap();
+        assert!(probe.container_duration().is_none());
+        assert!(probe.timing(probe.video().unwrap(), None).end.is_none());
+        assert!((chapter_duration(&tools, &input, &read).await.unwrap() - 2.0).abs() < 0.001);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires ffmpeg and ffprobe on PATH"]
+    async fn chapter_duration_excludes_a_longer_unselected_audio_track() {
+        use super::super::{access::MediaAccess, tools::ffmpeg_command};
+
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("multiple-tracks.mp4");
+        let tools = MediaTools::from_path(&HashMap::new());
+        let output = ffmpeg_command(&tools)
+            .unwrap()
+            .args([
+                "-f",
+                "lavfi",
+                "-i",
+                "color=size=32x32:rate=10:duration=2",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=2",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=550:duration=5",
+                "-map",
+                "0:v",
+                "-map",
+                "1:a",
+                "-map",
+                "2:a",
+                "-c:v",
+                "mpeg4",
+                "-c:a",
+                "aac",
+                "-disposition:a:0",
+                "default",
+                "-disposition:a:1",
+                "0",
+            ])
+            .arg(&input)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let access = MediaAccess::default();
+        let read = access.read(&input).unwrap();
+        let probe = probe_media(&tools, &input, &read).await.unwrap();
+        assert!(probe.container_duration().unwrap() > 3.0);
+        let timeline = build_playback_timeline(
+            &tools,
+            &input,
+            Method::GET,
+            &read,
+            &probe,
+            probe.video().unwrap(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(timeline.audio, Some(0));
+        // 现有兼容播放占满名额时，章节校验仍可运行。
+        let _playback = super::super::PLAYBACK_SLOTS.acquire_many(2).await.unwrap();
+        let duration = timeout(
+            Duration::from_secs(5),
+            super::super::probe_chapter_duration(&tools, &input, &read),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(duration, timeline.rounded_duration());
+        assert!((duration - 2.0).abs() < 0.05, "{duration}");
+    }
 
     #[test]
     fn audio_window_covers_a_short_tail_merged_across_its_boundary() {

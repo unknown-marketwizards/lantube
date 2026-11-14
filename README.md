@@ -49,6 +49,10 @@ Compatible playback and server-generated thumbnails require `ffmpeg` and `ffprob
 
 Use **Show other files** in a folder to open media with an unrecognized or missing extension. Those entries are opened individually and stay out of automatic playback.
 
+Choose **Split here** or press `C` while the player has focus to add a chapter at the current position. Open **Chapters** to jump to a chapter, or use the pencil button to rename it, adjust its start time, or merge it with the previous chapter. The server stores chapters in `data/chapters/` under its working directory. All devices share the same chapters, and the media files stay intact. With authentication enabled, editors can change chapters and viewers can open and navigate them.
+
+Saving chapters with cuts requires `ffprobe` on the server to verify the duration of the playback tracks. Changing the media content invalidates its previous chapters. Media folders must be separate from chapter storage.
+
 ---
 如果您对股票，期货，外汇等金融交易感兴趣
 

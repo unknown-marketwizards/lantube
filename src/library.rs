@@ -7,6 +7,7 @@ use axum::{
     response::Response,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     io,
@@ -116,12 +117,14 @@ fn split_path<'a>(
     Ok((root, relative))
 }
 
-async fn resolve_media(
-    data: &HashMap<String, PathBuf>,
-    path: &str,
-) -> Result<(PathBuf, PathBuf), AppError> {
-    let (root, relative) = split_path(data, path)?;
+async fn resolve_media(state: &AppState, path: &str) -> Result<(PathBuf, PathBuf), AppError> {
+    let (root, relative) = split_path(&state.data, path)?;
     let root = fs::canonicalize(root).await?;
+    if state.chapters.overlaps(&root) {
+        return Err(AppError::forbidden(
+            "Media root overlaps the chapter storage directory",
+        ));
+    }
     let target = if relative.as_os_str().is_empty() {
         root.clone()
     } else {
@@ -133,11 +136,8 @@ async fn resolve_media(
     Ok((root, target))
 }
 
-pub async fn resolve_directory(
-    data: &HashMap<String, PathBuf>,
-    path: &str,
-) -> Result<PathBuf, AppError> {
-    let (_, directory) = resolve_media(data, path).await?;
+pub async fn resolve_directory(state: &AppState, path: &str) -> Result<PathBuf, AppError> {
+    let (_, directory) = resolve_media(state, path).await?;
     if !fs::metadata(&directory).await?.is_dir() {
         return Err(AppError::bad_request("Expected a directory"));
     }
@@ -162,7 +162,7 @@ pub async fn explorer(
         ));
     }
 
-    let (root, directory) = resolve_media(&state.data, &path).await?;
+    let (root, directory) = resolve_media(&state, &path).await?;
     let mut entries = fs::read_dir(directory).await?;
     let mut result = Vec::new();
     while let Some(entry) = entries.next_entry().await? {
@@ -223,7 +223,7 @@ pub async fn mkdir(
         .rsplit_once('/')
         .filter(|(_, name)| is_normal_component(name))
         .ok_or_else(|| AppError::bad_request("Invalid new directory path"))?;
-    let parent = resolve_directory(&state.data, parent).await?;
+    let parent = resolve_directory(&state, parent).await?;
     fs::create_dir(parent.join(name)).await?;
     Ok(())
 }
@@ -236,8 +236,28 @@ pub async fn serve_media(
     if !is_normal_component(&root) {
         return Err(AppError::bad_request("Invalid media root"));
     }
-    let file = resolve_file(&state.data, &format!("{root}/{path}")).await?;
-    let mut response = ServeFile::new(file).try_call(request).await?;
+    let file = resolve_file(&state, &format!("{root}/{path}")).await?;
+    let axum::extract::Query(MediaQuery { revision }) =
+        axum::extract::Query::try_from_uri(request.uri())
+            .map_err(|_| AppError::bad_request("Invalid media revision"))?;
+    let versioned = revision.is_some() || request.method() == axum::http::Method::HEAD;
+    let _read = versioned.then(|| state.media.read(&file)).transpose()?;
+    let revision = if versioned {
+        let actual = file_revision(&file).await?;
+        if let Some(expected) = revision {
+            require_revision(actual, expected)?;
+        }
+        Some(actual)
+    } else {
+        None
+    };
+    let mut response = ServeFile::new(&file).try_call(request).await?;
+    if let Some(revision) = revision {
+        check_revision(&file, revision).await?;
+        response
+            .headers_mut()
+            .insert("x-media-revision", revision.into());
+    }
     // 原片每次复用前都需重新校验，重启后启用认证时同样适用。
     response.headers_mut().insert(
         header::CACHE_CONTROL,
@@ -246,11 +266,97 @@ pub async fn serve_media(
     Ok(response.map(Body::new))
 }
 
-pub async fn resolve_file(
-    data: &HashMap<String, PathBuf>,
-    path: &str,
-) -> Result<PathBuf, AppError> {
-    let (_, file) = resolve_media(data, path).await?;
+#[derive(Deserialize)]
+struct MediaQuery {
+    revision: Option<u64>,
+}
+
+pub async fn file_revision(path: &Path) -> Result<u64, AppError> {
+    let path = path.to_owned();
+    Ok(tokio::task::spawn_blocking(move || read_revision(&path)).await??)
+}
+
+pub fn read_revision(path: &Path) -> io::Result<u64> {
+    let file = std::fs::File::open(path)?;
+    opened_file_revision(&file)
+}
+
+pub fn opened_file_revision(file: &std::fs::File) -> io::Result<u64> {
+    let metadata = file.metadata()?;
+    let mut digest = Sha256::new();
+    digest.update(metadata.len().to_le_bytes());
+    for time in [Some(metadata.modified()?), metadata.created().ok()] {
+        digest.update([u8::from(time.is_some())]);
+        if let Some(time) = time {
+            let ns = match time.duration_since(UNIX_EPOCH) {
+                Ok(duration) => duration.as_nanos() as i128,
+                Err(error) => -(error.duration().as_nanos() as i128),
+            };
+            digest.update(ns.to_le_bytes());
+        }
+    }
+    #[cfg(unix)]
+    let changed_at = {
+        use std::os::unix::fs::MetadataExt;
+        digest.update(metadata.dev().to_le_bytes());
+        digest.update(metadata.ino().to_le_bytes());
+        i128::from(metadata.ctime()) * 1_000_000_000 + i128::from(metadata.ctime_nsec())
+    };
+    #[cfg(windows)]
+    let changed_at = {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, FILE_BASIC_INFO, FileBasicInfo, GetFileInformationByHandle,
+            GetFileInformationByHandleEx,
+        };
+        let mut info = BY_HANDLE_FILE_INFORMATION::default();
+        // 从已打开的文件取标识，避免将替换前后的路径属性混用。
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        digest.update(info.dwVolumeSerialNumber.to_le_bytes());
+        digest.update(info.nFileIndexHigh.to_le_bytes());
+        digest.update(info.nFileIndexLow.to_le_bytes());
+        let mut basic = FILE_BASIC_INFO::default();
+        // 覆盖原内容后即使恢复修改时间，文件系统的变更时间也会更新。
+        if unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                FileBasicInfo,
+                (&raw mut basic).cast(),
+                size_of::<FILE_BASIC_INFO>() as u32,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        i128::from(basic.ChangeTime)
+    };
+    #[cfg(not(any(unix, windows)))]
+    let changed_at = 0_i128;
+    digest.update(changed_at.to_le_bytes());
+    let prefix = digest.finalize()[..8]
+        .try_into()
+        .expect("SHA-256 has 32 bytes");
+    Ok(u64::from_le_bytes(prefix))
+}
+
+pub fn require_revision(actual: u64, expected: u64) -> Result<(), AppError> {
+    if actual != expected {
+        return Err(AppError::new(
+            axum::http::StatusCode::CONFLICT,
+            "Media file changed",
+        ));
+    }
+    Ok(())
+}
+
+pub async fn check_revision(path: &Path, expected: u64) -> Result<(), AppError> {
+    require_revision(file_revision(path).await?, expected)
+}
+
+pub async fn resolve_file(state: &AppState, path: &str) -> Result<PathBuf, AppError> {
+    let (_, file) = resolve_media(state, path).await?;
     if !fs::metadata(&file).await?.is_file() {
         return Err(io::Error::from(io::ErrorKind::NotFound).into());
     }
@@ -384,8 +490,13 @@ mod tests {
     #[tokio::test]
     async fn missing_media_returns_not_found() {
         let directory = tempfile::tempdir().unwrap();
-        let data = HashMap::from([("media".to_string(), directory.path().to_owned())]);
-        let error = resolve_media(&data, "media/missing.mp4").await.unwrap_err();
+        let state = AppState {
+            data: HashMap::from([("media".to_string(), directory.path().to_owned())]),
+            ..AppState::default()
+        };
+        let error = resolve_media(&state, "media/missing.mp4")
+            .await
+            .unwrap_err();
         assert_eq!(error.into_response().status(), StatusCode::NOT_FOUND);
     }
 
@@ -398,8 +509,11 @@ mod tests {
         fs::create_dir(&root).await.unwrap();
         fs::create_dir(&outside).await.unwrap();
         std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
-        let data = HashMap::from([("media".to_string(), root)]);
-        let error = resolve_media(&data, "media/link").await.unwrap_err();
+        let state = AppState {
+            data: HashMap::from([("media".to_string(), root)]),
+            ..AppState::default()
+        };
+        let error = resolve_media(&state, "media/link").await.unwrap_err();
         assert_eq!(error.into_response().status(), StatusCode::FORBIDDEN);
     }
 }
