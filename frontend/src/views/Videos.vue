@@ -83,8 +83,8 @@ const canSplit = computed(() => canEditChapters.value && editStart.value === und
 const activeChapter = computed(() => chapterAt(chapters.value, time.value))
 const chapterTitle = (chapter: Chapter, index: number) => chapter.title || t('chapterNumber', {number: index + 1})
 const currentChapter = computed(() => chapters.value[activeChapter.value])
-const chosenTab = ref<'queue' | 'chapters'>()
-const railTab = computed(() => chosenTab.value ?? (chapters.value.length ? 'chapters' : 'queue'))
+const railTab = ref<'queue' | 'chapters'>('queue')
+watch(chapterPath, () => { railTab.value = 'queue' }, {flush: 'sync'})
 const chapterPicker = ref<HTMLDialogElement>()
 const pickerOpen = ref(false)
 const chapterEditor = ref<HTMLFormElement>()
@@ -141,7 +141,7 @@ async function splitChapter() {
     const at = Math.round(video.value.currentTime * 1000)
     const source = src.value
     const next = chapters.value.length ? chapters.value : [{startMs: 0, title: ''}]
-    chosenTab.value = 'chapters'
+    railTab.value = 'chapters'
     chapterNotice.value = undefined
     if (next.length >= maxChapters) {
         chapterNotice.value = {key: 'chapterLimit'}
@@ -542,7 +542,6 @@ function setSleepTimer() {
 watch(src, async (source, _, onCleanup) => {
     let superseded = false
     onCleanup(() => { superseded = true })
-    chosenTab.value = undefined
     chapterNotice.value = undefined
     closeChapterEditor(false)
     chapterPicker.value?.close()
@@ -810,10 +809,10 @@ const supportsPip = document.pictureInPictureEnabled
 
                 <aside class="queue" :aria-label="t(railTab)">
                     <header class="queue-heading">
-                        <button class="rail-tab" type="button" :aria-pressed="railTab === 'queue'" @click="chosenTab = 'queue'">
+                        <button class="rail-tab" type="button" :aria-pressed="railTab === 'queue'" @click="railTab = 'queue'">
                             <ListVideo :size="17" />{{ t('queue') }}
                         </button>
-                        <button class="rail-tab" type="button" :aria-pressed="railTab === 'chapters'" @click="chosenTab = 'chapters'">
+                        <button class="rail-tab" type="button" :aria-pressed="railTab === 'chapters'" @click="railTab = 'chapters'">
                             <ListTree :size="17" />{{ t('chapters') }}
                         </button>
                         <span v-if="railTab === 'queue'" class="queue-progress">{{ index + 1 }} / {{ playlist.length }}</span>
